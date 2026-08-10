@@ -367,14 +367,14 @@ function activeSleep() {
   ) || null;
 }
 
-/* ---------- Éditeur d'heure réutilisable (− / + = ±10 min) ---------- */
+/* ---------- Éditeur d'heure réutilisable (− / + = ±5 min) ---------- */
 function timeFieldHTML(date, label = 'Heure') {
   return `
     <div class="sheet-section-label">${label}</div>
     <div class="time-edit">
-      <button type="button" class="time-step" data-step="-10">−</button>
+      <button type="button" class="time-step" data-step="-5">−</button>
       <input type="time" class="time-input" value="${hhmmInput(date)}" />
-      <button type="button" class="time-step" data-step="10">+</button>
+      <button type="button" class="time-step" data-step="5">+</button>
     </div>`;
 }
 // Branche les ± d'un champ heure. root = élément conteneur, baseDate = jour de référence.
