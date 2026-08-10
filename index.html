@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, maximum-scale=1.0, user-scalable=no" />
+  <meta name="theme-color" content="#ffffff" />
+  <title>Suivi Bébé</title>
+
+  <!-- PWA -->
+  <link rel="manifest" href="manifest.webmanifest" />
+  <link rel="apple-touch-icon" href="icons/apple-touch-icon.png" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+  <meta name="apple-mobile-web-app-title" content="Suivi Bébé" />
+
+  <link rel="stylesheet" href="styles.css?v=12" />
+</head>
+<body>
+  <div id="app">
+
+    <!-- ===== Vue SUIVI ===== -->
+    <div class="view" id="view-suivi">
+      <header class="topbar">
+        <button class="nav-btn" id="prevDay" aria-label="Jour précédent">‹</button>
+        <div class="date-wrap">
+          <div class="date-label" id="dateLabel">Aujourd'hui</div>
+          <div class="date-sub" id="dateSub"></div>
+        </div>
+        <button class="nav-btn" id="nextDay" aria-label="Jour suivant">›</button>
+      </header>
+
+      <!-- Bandeau "dernière fois" -->
+      <section class="status-strip" id="statusStrip"></section>
+
+      <!-- Checklist quotidienne -->
+      <section class="checklist-wrap">
+        <h2 class="section-label">Chaque jour</h2>
+        <div class="checklist" id="checklist"></div>
+      </section>
+
+      <!-- Grille de boutons d'action -->
+      <main class="grid" id="actionGrid"></main>
+
+      <!-- Ce que j'ai appris aujourd'hui -->
+      <section class="learned-wrap">
+        <h2 class="section-label">✨ Ce que j'ai appris aujourd'hui</h2>
+        <div class="learned-input">
+          <input type="text" id="learnedText" />
+          <button id="learnedAdd">Ajouter</button>
+        </div>
+        <ul class="learned-today" id="learnedToday"></ul>
+      </section>
+
+      <!-- Journal du jour -->
+      <section class="timeline-wrap">
+        <h2 class="section-label">Journal <span id="timelineCount"></span></h2>
+        <ul class="timeline" id="timeline"></ul>
+      </section>
+    </div>
+
+    <!-- ===== Vue APPRIS ===== -->
+    <div class="view" id="view-appris" hidden>
+      <header class="view-header">
+        <h1>✨ Ce que bébé a appris</h1>
+        <p class="view-sub">Chaque nouvelle chose, avec sa date</p>
+      </header>
+      <div id="apprisList"></div>
+    </div>
+
+  </div>
+
+  <!-- Barre d'onglets -->
+  <nav class="tabbar" id="tabbar"></nav>
+
+  <!-- Bottom sheet -->
+  <div class="sheet-backdrop" id="sheetBackdrop" hidden>
+    <div class="sheet" id="sheet" role="dialog" aria-modal="true">
+      <div class="sheet-handle"></div>
+      <div class="sheet-body" id="sheetBody"></div>
+    </div>
+  </div>
+
+  <!-- Toast -->
+  <div class="toast" id="toast" hidden></div>
+
+  <script src="app.js?v=12"></script>
+  <script>
+    // Enregistrement du service worker (PWA hors-ligne)
+    if ('serviceWorker' in navigator) {
+      window.addEventListener('load', () => {
+        navigator.serviceWorker.register('sw.js').catch(() => {});
+      });
+    }
+  </script>
+</body>
+</html>
