@@ -429,6 +429,39 @@ body :is(input, textarea) { -webkit-user-select: text; user-select: text; }
 .sync-pill.sync-offline { background: #C7774A; cursor: pointer; opacity: 1; } /* orange : hors ligne, cliquable */
 .sync-pill[hidden]      { display: none; }
 
+/* ---------- Tirer pour rafraîchir : petit disque + spinner en haut ---------- */
+.ptr {
+  position: fixed;
+  top: calc(var(--safe-top) + 4px);
+  left: 50%;
+  margin-left: -18px;
+  width: 36px;
+  height: 36px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  background: var(--surface);
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.18);
+  opacity: 0;
+  transform: translateY(0);
+  transition: opacity 0.15s ease;
+  z-index: 60;
+  pointer-events: none;
+}
+.ptr.visible { opacity: 1; }
+.ptr-spinner {
+  width: 18px;
+  height: 18px;
+  border: 2px solid var(--line);
+  border-top-color: var(--c-biberon, #8AB4D8);
+  border-radius: 50%;
+  transition: transform 0.1s linear;
+}
+.ptr.ready .ptr-spinner { border-top-color: var(--c-vitamined, #8EBA73); transform: rotate(180deg); }
+.ptr.refreshing .ptr-spinner { animation: ptr-spin 0.7s linear infinite; }
+@keyframes ptr-spin { to { transform: rotate(360deg); } }
+
 /* ---------- Écran de déverrouillage (Phase 3) ---------- */
 .lock-screen {
   position: fixed;

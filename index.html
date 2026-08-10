@@ -14,9 +14,12 @@
   <meta name="apple-mobile-web-app-status-bar-style" content="default" />
   <meta name="apple-mobile-web-app-title" content="Suivi Bébé" />
 
-  <link rel="stylesheet" href="styles.css?v=15" />
+  <link rel="stylesheet" href="styles.css?v=16" />
 </head>
 <body>
+  <!-- Indicateur "tirer pour rafraîchir" -->
+  <div id="ptr" class="ptr" aria-hidden="true"><div class="ptr-spinner"></div></div>
+
   <div id="app">
 
     <!-- ===== Vue SUIVI ===== -->
@@ -105,7 +108,7 @@
 
   <script src="vendor/supabase.js"></script>
   <script src="config.js?v=15"></script>
-  <script src="app.js?v=15"></script>
+  <script src="app.js?v=16"></script>
   <script>
     // Enregistrement du service worker (PWA hors-ligne)
     if ('serviceWorker' in navigator) {

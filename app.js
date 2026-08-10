@@ -136,6 +136,13 @@ const Store = {
   },
   lastOf(action) { return this.all().find(e => e.action === action) || null; },
 
+  // Rafraîchissement manuel (tirer pour rafraîchir) / au retour au premier plan :
+  // re-fusionne l'état serveur puis vide la file. No-op si non connecté.
+  async refresh() {
+    if (this._authed && this._sb) { await this._pullAll(); this._flush(); }
+    return true;
+  },
+
   _subs: [],
   subscribe(cb) { this._subs.push(cb); },
   _notify() { this._subs.forEach(cb => cb()); },
@@ -596,11 +603,7 @@ function renderAppris() {
    ============================================================ */
 function onActionTap(action) {
   if (action.id === 'sommeil') { onSleepTap(); return; }
-  const builders = {
-    tetee: sheetTetee, biberon: sheetBiberon, couche: sheetCouche,
-    temperature: sheetTemperature, medicament: sheetMedicament,
-  };
-  (builders[action.id] || sheetSimple)(action);
+  openActionSheet(action);
 }
 
 /* ---------- Bottom sheet ---------- */
@@ -615,156 +618,154 @@ function save(action, data, ts) {
   closeSheet(); toast(`${action.emoji} ${action.name} enregistré`); vibrate(); renderCurrent();
 }
 
-/* -- Tétée -- */
-function sheetTetee(action) {
-  const state = { side: null, duration: null };
-  openSheet(`
-    <div class="sheet-title">${action.emoji} Tétée</div>
-    <div class="sheet-section-label">Côté</div>
-    <div class="chips" id="sides" style="--accent:${action.color}">
-      <button class="chip" data-v="gauche">Gauche</button>
-      <button class="chip" data-v="droite">Droite</button>
-      <button class="chip" data-v="les deux">Les deux</button>
-    </div>
-    <div class="sheet-section-label">Durée (optionnel)</div>
-    <div class="presets" id="durations">
-      ${[5, 10, 15, 20, 30].map(v => `<button class="preset" data-v="${v}">${v} min</button>`).join('')}
-    </div>
-    ${timeFieldHTML(defaultTs())}
-    <div class="sheet-actions">
-      <button class="btn btn-ghost" id="cancel">Annuler</button>
-      <button class="btn btn-primary" id="save" style="--accent:${action.color}">Enregistrer</button>
-    </div>`);
-  const getTime = wireTimeField(sheetBody, defaultTs());
-  const sides = document.getElementById('sides');
-  sides.onclick = e => { const c = e.target.closest('.chip'); if (!c) return;
-    sides.querySelectorAll('.chip').forEach(x => x.classList.remove('selected')); c.classList.add('selected'); state.side = c.dataset.v; };
-  const durations = document.getElementById('durations');
-  durations.onclick = e => { const c = e.target.closest('.preset'); if (!c) return;
-    const on = c.classList.contains('selected');
-    durations.querySelectorAll('.preset').forEach(x => x.classList.remove('selected'));
-    state.duration = on ? null : Number(c.dataset.v); if (!on) c.classList.add('selected'); };
-  document.getElementById('cancel').onclick = closeSheet;
-  document.getElementById('save').onclick = () => {
-    const data = {}; if (state.side) data.side = state.side; if (state.duration) data.duration = state.duration;
-    save(action, data, getTime());
-  };
-}
+/* -- Modules de champs par action --
+   Chaque module sait produire son HTML pré-rempli (à partir de `data`) et se
+   câbler ; `wire` renvoie une fonction `getData()` qui lit l'état courant.
+   Réutilisé À L'IDENTIQUE en création (data vide) ET en édition (data existante). */
+const FORMS = {
+  tetee: {
+    html(d, color) {
+      const sel = v => d.side === v ? ' selected' : '';
+      const dsel = v => Number(d.duration) === v ? ' selected' : '';
+      return `
+        <div class="sheet-section-label">Côté</div>
+        <div class="chips" id="sides" style="--accent:${color}">
+          <button type="button" class="chip${sel('gauche')}" data-v="gauche">Gauche</button>
+          <button type="button" class="chip${sel('droite')}" data-v="droite">Droite</button>
+          <button type="button" class="chip${sel('les deux')}" data-v="les deux">Les deux</button>
+        </div>
+        <div class="sheet-section-label">Durée (optionnel)</div>
+        <div class="presets" id="durations">
+          ${[5, 10, 15, 20, 30].map(v => `<button type="button" class="preset${dsel(v)}" data-v="${v}">${v} min</button>`).join('')}
+        </div>`;
+    },
+    wire(root, d) {
+      const state = { side: d.side || null, duration: d.duration != null ? Number(d.duration) : null };
+      const sides = root.querySelector('#sides');
+      sides.onclick = e => { const c = e.target.closest('.chip'); if (!c) return;
+        sides.querySelectorAll('.chip').forEach(x => x.classList.remove('selected')); c.classList.add('selected'); state.side = c.dataset.v; };
+      const durations = root.querySelector('#durations');
+      durations.onclick = e => { const c = e.target.closest('.preset'); if (!c) return;
+        const on = c.classList.contains('selected');
+        durations.querySelectorAll('.preset').forEach(x => x.classList.remove('selected'));
+        state.duration = on ? null : Number(c.dataset.v); if (!on) c.classList.add('selected'); };
+      return () => { const data = {}; if (state.side) data.side = state.side; if (state.duration) data.duration = state.duration; return data; };
+    },
+  },
 
-/* -- Biberon -- */
-function sheetBiberon(action) {
-  let ml = 90;
-  openSheet(`
-    <div class="sheet-title">${action.emoji} Biberon</div>
-    <div class="sheet-section-label">Quantité bue</div>
-    <div class="stepper">
-      <button id="minus">−</button>
-      <div class="value"><span id="mlval">${ml}</span> <small>ml</small></div>
-      <button id="plus">+</button>
-    </div>
-    <div class="presets" id="mlpresets">
-      ${[30, 60, 90, 120, 150, 180].map(v => `<button class="preset" data-v="${v}">${v}</button>`).join('')}
-    </div>
-    ${timeFieldHTML(defaultTs())}
-    <div class="sheet-actions">
-      <button class="btn btn-ghost" id="cancel">Annuler</button>
-      <button class="btn btn-primary" id="save" style="--accent:${action.color}">Enregistrer</button>
-    </div>`);
-  const getTime = wireTimeField(sheetBody, defaultTs());
-  const valEl = document.getElementById('mlval');
-  const setMl = v => { ml = Math.max(0, v); valEl.textContent = ml; };
-  document.getElementById('minus').onclick = () => setMl(ml - 10);
-  document.getElementById('plus').onclick = () => setMl(ml + 10);
-  document.getElementById('mlpresets').onclick = e => { const c = e.target.closest('.preset'); if (c) setMl(Number(c.dataset.v)); };
-  document.getElementById('cancel').onclick = closeSheet;
-  document.getElementById('save').onclick = () => save(action, { ml }, getTime());
-}
+  biberon: {
+    html(d) {
+      const ml = d.ml != null ? Number(d.ml) : 90;
+      return `
+        <div class="sheet-section-label">Quantité bue</div>
+        <div class="stepper">
+          <button type="button" id="minus">−</button>
+          <div class="value"><span id="mlval">${ml}</span> <small>ml</small></div>
+          <button type="button" id="plus">+</button>
+        </div>
+        <div class="presets" id="mlpresets">
+          ${[30, 60, 90, 120, 150, 180].map(v => `<button type="button" class="preset" data-v="${v}">${v}</button>`).join('')}
+        </div>`;
+    },
+    wire(root, d) {
+      let ml = d.ml != null ? Number(d.ml) : 90;
+      const valEl = root.querySelector('#mlval');
+      const setMl = v => { ml = Math.max(0, v); valEl.textContent = ml; };
+      root.querySelector('#minus').onclick = () => setMl(ml - 10);
+      root.querySelector('#plus').onclick = () => setMl(ml + 10);
+      root.querySelector('#mlpresets').onclick = e => { const c = e.target.closest('.preset'); if (c) setMl(Number(c.dataset.v)); };
+      return () => ({ ml });
+    },
+  },
 
-/* -- Couche -- */
-function sheetCouche(action) {
-  let type = null;
-  openSheet(`
-    <div class="sheet-title">${action.emoji} Couche</div>
-    <div class="sheet-section-label">Contenu</div>
-    <div class="chips" id="types" style="--accent:${action.color}">
-      <button class="chip" data-v="pipi">💧 Pipi</button>
-      <button class="chip" data-v="caca">💩 Caca</button>
-      <button class="chip" data-v="mixte">Les deux</button>
-    </div>
-    ${timeFieldHTML(defaultTs())}
-    <div class="sheet-actions">
-      <button class="btn btn-ghost" id="cancel">Annuler</button>
-      <button class="btn btn-primary" id="save" style="--accent:${action.color}">Enregistrer</button>
-    </div>`);
-  const getTime = wireTimeField(sheetBody, defaultTs());
-  const types = document.getElementById('types');
-  types.onclick = e => { const c = e.target.closest('.chip'); if (!c) return;
-    types.querySelectorAll('.chip').forEach(x => x.classList.remove('selected')); c.classList.add('selected'); type = c.dataset.v; };
-  document.getElementById('cancel').onclick = closeSheet;
-  document.getElementById('save').onclick = () => save(action, type ? { type } : {}, getTime());
-}
+  couche: {
+    html(d, color) {
+      const sel = v => d.type === v ? ' selected' : '';
+      return `
+        <div class="sheet-section-label">Contenu</div>
+        <div class="chips" id="types" style="--accent:${color}">
+          <button type="button" class="chip${sel('pipi')}" data-v="pipi">💧 Pipi</button>
+          <button type="button" class="chip${sel('caca')}" data-v="caca">💩 Caca</button>
+          <button type="button" class="chip${sel('mixte')}" data-v="mixte">Les deux</button>
+        </div>`;
+    },
+    wire(root, d) {
+      let type = d.type || null;
+      const types = root.querySelector('#types');
+      types.onclick = e => { const c = e.target.closest('.chip'); if (!c) return;
+        types.querySelectorAll('.chip').forEach(x => x.classList.remove('selected')); c.classList.add('selected'); type = c.dataset.v; };
+      return () => type ? { type } : {};
+    },
+  },
 
-/* -- Température (base 36,5 · pas 0,1) -- */
-function sheetTemperature(action) {
-  let temp = 36.5;
-  const render = () => { document.getElementById('tval').textContent = fmtTemp(temp); };
-  openSheet(`
-    <div class="sheet-title">${action.emoji} Température</div>
-    <div class="stepper">
-      <button id="minus">−</button>
-      <div class="value"><span id="tval">${fmtTemp(temp)}</span> <small>°C</small></div>
-      <button id="plus">+</button>
-    </div>
-    <div class="presets" id="tpresets">
-      ${[36.5, 37.0, 37.5, 38.0, 38.5].map(v => `<button class="preset" data-v="${v}">${fmtTemp(v)}</button>`).join('')}
-    </div>
-    ${timeFieldHTML(defaultTs())}
-    <div class="sheet-actions">
-      <button class="btn btn-ghost" id="cancel">Annuler</button>
-      <button class="btn btn-primary" id="save" style="--accent:${action.color}">Enregistrer</button>
-    </div>`);
-  const getTime = wireTimeField(sheetBody, defaultTs());
-  const setTemp = v => { temp = Math.round(v * 10) / 10; render(); };
-  document.getElementById('minus').onclick = () => setTemp(temp - 0.1);
-  document.getElementById('plus').onclick = () => setTemp(temp + 0.1);
-  document.getElementById('tpresets').onclick = e => { const c = e.target.closest('.preset'); if (c) setTemp(Number(c.dataset.v)); };
-  document.getElementById('cancel').onclick = closeSheet;
-  document.getElementById('save').onclick = () => save(action, { temp }, getTime());
-}
+  temperature: {
+    html(d) {
+      const temp = d.temp != null ? Number(d.temp) : 36.5;
+      return `
+        <div class="stepper">
+          <button type="button" id="minus">−</button>
+          <div class="value"><span id="tval">${fmtTemp(temp)}</span> <small>°C</small></div>
+          <button type="button" id="plus">+</button>
+        </div>
+        <div class="presets" id="tpresets">
+          ${[36.5, 37.0, 37.5, 38.0, 38.5].map(v => `<button type="button" class="preset" data-v="${v}">${fmtTemp(v)}</button>`).join('')}
+        </div>`;
+    },
+    wire(root, d) {
+      let temp = d.temp != null ? Number(d.temp) : 36.5;
+      const tval = root.querySelector('#tval');
+      const setTemp = v => { temp = Math.round(v * 10) / 10; tval.textContent = fmtTemp(temp); };
+      root.querySelector('#minus').onclick = () => setTemp(temp - 0.1);
+      root.querySelector('#plus').onclick = () => setTemp(temp + 0.1);
+      root.querySelector('#tpresets').onclick = e => { const c = e.target.closest('.preset'); if (c) setTemp(Number(c.dataset.v)); };
+      return () => ({ temp });
+    },
+  },
 
-/* -- Médicament (nom éditable) -- */
-function sheetMedicament(action) {
-  openSheet(`
-    <div class="sheet-title">${action.emoji} Médicament</div>
-    <div class="sheet-section-label">Nom du/des médicament(s)</div>
-    <input type="text" class="text-field" id="medName" autocomplete="off" />
-    ${timeFieldHTML(defaultTs())}
-    <div class="sheet-actions">
-      <button class="btn btn-ghost" id="cancel">Annuler</button>
-      <button class="btn btn-primary" id="save" style="--accent:${action.color}">Enregistrer</button>
-    </div>`);
-  const getTime = wireTimeField(sheetBody, defaultTs());
-  const input = document.getElementById('medName');
-  setTimeout(() => input.focus(), 50);
-  document.getElementById('cancel').onclick = closeSheet;
-  document.getElementById('save').onclick = () => {
-    const name = input.value.trim();
-    save(action, name ? { name } : {}, getTime());
-  };
-}
+  medicament: {
+    html(d) {
+      return `
+        <div class="sheet-section-label">Nom du/des médicament(s)</div>
+        <input type="text" class="text-field" id="medName" autocomplete="off" value="${escapeHtml(d.name || '')}" />`;
+    },
+    wire(root) {
+      const input = root.querySelector('#medName');
+      return () => { const name = input.value.trim(); return name ? { name } : {}; };
+    },
+  },
+};
 
-/* -- Action simple (Bain) : juste l'heure -- */
-function sheetSimple(action) {
+/* Feuille unique création/édition d'une action.
+   - `ev` absent  → création (heure = defaultTs, bouton "Annuler", save = Store.add)
+   - `ev` présent → édition  (heure + champs pré-remplis, bouton "Supprimer", save = update)
+   Les actions sans module (bain, checklist) n'affichent que l'heure. */
+function openActionSheet(action, ev) {
+  const isEdit = !!ev;
+  const d = isEdit ? { ...(ev.data || {}) } : {};
+  const ts = isEdit ? new Date(ev.ts) : defaultTs();
+  const form = FORMS[action.id];
   openSheet(`
     <div class="sheet-title">${action.emoji} ${action.name}</div>
-    ${timeFieldHTML(defaultTs())}
+    ${form ? form.html(d, action.color) : ''}
+    ${timeFieldHTML(ts)}
     <div class="sheet-actions">
-      <button class="btn btn-ghost" id="cancel">Annuler</button>
+      <button class="btn ${isEdit ? 'btn-danger' : 'btn-ghost'}" id="${isEdit ? 'del' : 'cancel'}">${isEdit ? 'Supprimer' : 'Annuler'}</button>
       <button class="btn btn-primary" id="save" style="--accent:${action.color}">Enregistrer</button>
     </div>`);
-  const getTime = wireTimeField(sheetBody, defaultTs());
-  document.getElementById('cancel').onclick = closeSheet;
-  document.getElementById('save').onclick = () => save(action, {}, getTime());
+  const getTime = wireTimeField(sheetBody, ts);
+  const getData = form ? form.wire(sheetBody, d) : () => ({});
+  // Focus auto du nom uniquement en création (l'édition ne doit pas ouvrir le clavier d'emblée)
+  if (!isEdit && action.id === 'medicament') { const i = sheetBody.querySelector('#medName'); if (i) setTimeout(() => i.focus(), 50); }
+  if (isEdit) {
+    document.getElementById('del').onclick = () => { Store.remove(ev.id); closeSheet(); toast('Supprimé'); renderCurrent(); };
+    document.getElementById('save').onclick = () => {
+      Store.update(ev.id, { ts: getTime().toISOString(), data: getData() });
+      closeSheet(); toast('Modifié'); vibrate(); renderCurrent();
+    };
+  } else {
+    document.getElementById('cancel').onclick = closeSheet;
+    document.getElementById('save').onclick = () => save(action, getData(), getTime());
+  }
 }
 
 /* ---------- Sommeil : début / fin ---------- */
@@ -817,18 +818,7 @@ function sheetSleepEnd(sleep) {
 function openEditSheet(ev) {
   if (ev.action === 'sommeil') { ev.data && ev.data.end ? sheetSleepEditDone(ev) : sheetSleepEnd(ev); return; }
   const a = ACTION_MAP[ev.action] || { name: ev.action, emoji: '•', color: 'var(--line)' };
-  const detail = describe(ev);
-  openSheet(`
-    <div class="sheet-title">${a.emoji} ${a.name}</div>
-    ${detail ? `<div class="sheet-sub">${escapeHtml(detail)}</div>` : ''}
-    ${timeFieldHTML(ev.ts)}
-    <div class="sheet-actions">
-      <button class="btn btn-danger" id="del">Supprimer</button>
-      <button class="btn btn-primary" id="save" style="--accent:${a.color}">Enregistrer</button>
-    </div>`);
-  const getTime = wireTimeField(sheetBody, ev.ts);
-  document.getElementById('del').onclick = () => { Store.remove(ev.id); closeSheet(); toast('Supprimé'); renderCurrent(); };
-  document.getElementById('save').onclick = () => { Store.update(ev.id, { ts: getTime().toISOString() }); closeSheet(); toast('Modifié'); renderCurrent(); };
+  openActionSheet(a, ev);   // même feuille qu'à la création, champs pré-remplis
 }
 
 // Édition d'un dodo terminé : début + fin
@@ -968,7 +958,62 @@ window.addEventListener('storage', (e) => {
 // Retour de connexion : on tente de vider la file d'envoi
 window.addEventListener('online', () => { if (Store._authed) Store._flush(); });
 
+// Retour au premier plan (rouverture via raccourci, changement d'onglet…) :
+// la connexion temps réel a pu se couper en arrière-plan → on re-fusionne.
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible' && Store._authed) {
+    Store.refresh().then(renderCurrent);
+  }
+});
+
+/* ---------- Tirer pour rafraîchir (pull-to-refresh) ---------- */
+function wirePullToRefresh() {
+  const ptr = document.getElementById('ptr');
+  if (!ptr) return;
+  const THRESHOLD = 70;                          // distance (px) à franchir pour déclencher
+  const scroller = document.scrollingElement || document.documentElement;
+  let startY = null, pulling = false, dist = 0, busy = false;
+  const reset = () => { ptr.style.transform = ''; ptr.classList.remove('visible', 'ready'); dist = 0; };
+
+  window.addEventListener('touchstart', (e) => {
+    pulling = false;
+    if (busy || e.touches.length !== 1 || (scroller.scrollTop || 0) > 0) return;
+    const lock = document.getElementById('lockScreen');
+    if (!backdrop.hidden || (lock && !lock.hidden)) return;   // pas de PTR si une feuille/le verrou est ouvert
+    startY = e.touches[0].clientY; pulling = true; dist = 0;
+  }, { passive: true });
+
+  window.addEventListener('touchmove', (e) => {
+    if (!pulling) return;
+    const dy = e.touches[0].clientY - startY;
+    if (dy > 0 && (scroller.scrollTop || 0) <= 0) {
+      e.preventDefault();                          // empêche le rebond natif pendant qu'on tire
+      dist = Math.min(dy * 0.5, 90);               // résistance : on suit à moitié
+      ptr.style.transform = `translateY(${dist}px)`;
+      ptr.classList.add('visible');
+      ptr.classList.toggle('ready', dist >= THRESHOLD);
+    } else {
+      pulling = false; reset();                    // l'utilisateur remonte / scrolle : on annule
+    }
+  }, { passive: false });
+
+  window.addEventListener('touchend', async () => {
+    if (!pulling) return;
+    pulling = false;
+    if (dist >= THRESHOLD) {
+      busy = true;
+      ptr.classList.remove('ready'); ptr.classList.add('refreshing');
+      ptr.style.transform = `translateY(${THRESHOLD}px)`;
+      try { await Store.refresh(); renderCurrent(); } catch { /* hors ligne : rien */ }
+      ptr.classList.remove('refreshing');
+      busy = false;
+    }
+    reset();
+  });
+}
+
 wireLockScreen();
+wirePullToRefresh();
 renderTabbar();
 renderCurrent();                              // rendu immédiat depuis le cache local (offline-first)
 setInterval(() => { if (currentView === 'suivi') { renderStatusStrip(); renderGrid(); } }, 60000);
