@@ -9,18 +9,42 @@
    et plus tard le dashboard, la heatmap calendrier et l'export.
    ========================================================= */
 
-/* ---------- Couche de données ---------- */
+/* ---------- Couche de données ----------
+   Modèle : journal d'événements { id, action, data, ts, deleted }.
+   - Source de vérité locale = localStorage (offline-first, rendu instantané).
+   - Synchro Supabase (Phase 3) EN PLUS, sans changer l'API publique :
+     chaque écriture est mise dans une file (`_queue`, coalescée par id)
+     puis "flushée" (upsert) vers le serveur ; le serveur estampe
+     `updated_at` (trigger). Le temps réel + un pull fusionnent les
+     changements distants. Règle de conflit : une écriture encore en file
+     locale l'emporte ; sinon on adopte la version serveur (autoritaire).
+   - Suppression = soft-delete (`deleted:true`, tombstone) → se propage. */
 const Store = {
   KEY: 'suivi-bebe-events',
-  _cache: null,
+  QKEY: 'suivi-bebe-queue',
+  MIGKEY: 'suivi-bebe-migrated',
+  _cache: null,      // tableau de TOUTES les lignes (y compris deleted)
+  _byId: null,       // Map id -> ligne (mêmes références que _cache)
+  _queue: null,      // Map id -> snapshot en attente d'envoi
+  _flushing: false,  // verrou de flush
+  _sb: null,         // client Supabase
+  _authed: false,    // session active ?
+  _channel: null,    // canal Realtime
+  _syncState: 'local',
 
+  /* ----- Cache local ----- */
   _load() {
     if (this._cache) return this._cache;
     try {
       const parsed = JSON.parse(localStorage.getItem(this.KEY));
       this._cache = Array.isArray(parsed) ? parsed : [];
     } catch { this._cache = []; }
+    this._reindex();
     return this._cache;
+  },
+  _reindex() {
+    this._byId = new Map();
+    for (const e of this._cache) this._byId.set(e.id, e);
   },
   _save() {
     try {
@@ -33,7 +57,37 @@ const Store = {
     this._notify();
   },
 
-  all() { return [...this._load()].sort((a, b) => new Date(b.ts) - new Date(a.ts)); },
+  /* ----- File d'envoi (persistée pour survivre au hors-ligne) ----- */
+  _loadQueue() {
+    if (this._queue) return this._queue;
+    this._queue = new Map();
+    try {
+      const parsed = JSON.parse(localStorage.getItem(this.QKEY));
+      if (parsed && typeof parsed === 'object') {
+        for (const k of Object.keys(parsed)) this._queue.set(k, parsed[k]);
+      }
+    } catch { /* file illisible : on repart d'une file vide */ }
+    return this._queue;
+  },
+  _saveQueue() {
+    try {
+      const obj = {};
+      for (const [k, v] of this._queue) obj[k] = v;
+      localStorage.setItem(this.QKEY, JSON.stringify(obj));
+    } catch { /* non bloquant */ }
+  },
+  _snapshot(row) {
+    return { id: row.id, action: row.action, data: { ...(row.data || {}) }, ts: row.ts, deleted: !!row.deleted };
+  },
+  _enqueue(row) {
+    this._loadQueue();
+    this._queue.set(row.id, this._snapshot(row));
+    this._saveQueue();
+    this._flush();
+  },
+
+  /* ----- API publique (INCHANGÉE pour l'UI) ----- */
+  all() { return this._load().filter(e => !e.deleted).sort((a, b) => new Date(b.ts) - new Date(a.ts)); },
   byDay(date) { const k = ymd(date); return this.all().filter(e => ymd(new Date(e.ts)) === k); },
   byAction(action) { return this.all().filter(e => e.action === action); },
   // Brique pour dashboard / heatmap : événements entre deux dates incluses
@@ -42,36 +96,181 @@ const Store = {
     return this.all().filter(e => { const t = startOfDay(new Date(e.ts)).getTime(); return t >= a && t <= b; });
   },
   // Brique pour l'export (JSON pour l'instant)
-  exportJSON() { return JSON.stringify(this._load(), null, 2); },
+  exportJSON() { return JSON.stringify(this.all(), null, 2); },
 
   add(action, data = {}, ts = new Date()) {
     const event = {
       id: (crypto.randomUUID && crypto.randomUUID()) || String(Date.now() + Math.random()),
-      action, data, ts: ts.toISOString(),
+      action, data, ts: ts.toISOString(), deleted: false,
     };
     this._load().push(event);
+    this._byId.set(event.id, event);
     this._save();
+    this._enqueue(event);
     return event;
   },
   update(id, patch) {
-    const ev = this._load().find(e => e.id === id);
+    this._load();
+    const ev = this._byId.get(id);
     if (!ev) return;
     Object.assign(ev, patch);
     this._save();
+    this._enqueue(ev);
   },
   // Fusionne des clés dans event.data
   patchData(id, dataPatch) {
-    const ev = this._load().find(e => e.id === id);
+    this._load();
+    const ev = this._byId.get(id);
     if (!ev) return;
     ev.data = { ...(ev.data || {}), ...dataPatch };
     this._save();
+    this._enqueue(ev);
   },
-  remove(id) { this._cache = this._load().filter(e => e.id !== id); this._save(); },
+  remove(id) {
+    this._load();
+    const ev = this._byId.get(id);
+    if (!ev) return;
+    ev.deleted = true;                 // tombstone (soft-delete) → se propage à l'autre appareil
+    this._save();
+    this._enqueue(ev);
+  },
   lastOf(action) { return this.all().find(e => e.action === action) || null; },
 
   _subs: [],
   subscribe(cb) { this._subs.push(cb); },
   _notify() { this._subs.forEach(cb => cb()); },
+
+  /* ============================================================
+     Synchro Supabase
+     ============================================================ */
+  hasLocalCache() { return this._load().some(e => !e.deleted); },
+
+  initSupabase() {
+    const cfg = window.SB_CONFIG;
+    if (!cfg || !cfg.url || !cfg.anon || cfg.url.includes('XXXX')) return false; // pas encore configuré → 100 % local
+    if (!window.supabase || !window.supabase.createClient) return false;
+    this._sb = window.supabase.createClient(cfg.url, cfg.anon, {
+      auth: { persistSession: true, autoRefreshToken: true },
+    });
+    return true;
+  },
+
+  async restoreSession() {
+    if (!this._sb) return false;
+    try {
+      const { data } = await this._sb.auth.getSession();
+      if (data && data.session) { await this._onAuthed(); return true; }
+    } catch { /* réseau indisponible : on reste en local */ }
+    return false;
+  },
+
+  async signIn(passphrase) {
+    if (!this._sb) throw new Error('Synchro non configurée');
+    const cfg = window.SB_CONFIG;
+    const { error } = await this._sb.auth.signInWithPassword({ email: cfg.email, password: passphrase });
+    if (error) throw error;
+    await this._onAuthed();
+    return true;
+  },
+
+  async _onAuthed() {
+    this._authed = true;
+    this._setSync('pending');
+    await this._migrateOnce();   // remonte les données locales existantes (1re fois)
+    await this._pullAll();       // fusionne l'état serveur (ne remplace jamais les ids en file)
+    this._subscribeRealtime();
+    this._flush();
+  },
+
+  // Migration unique local → serveur : enfile tout l'existant, une seule fois.
+  async _migrateOnce() {
+    if (localStorage.getItem(this.MIGKEY) === '1') return;
+    this._load();
+    this._loadQueue();
+    for (const e of this._cache) this._queue.set(e.id, this._snapshot(e));
+    this._saveQueue();
+    localStorage.setItem(this.MIGKEY, '1');
+  },
+
+  async _pullAll() {
+    if (!this._sb || !this._authed) return;
+    this._load();
+    this._loadQueue();
+    let data, error;
+    try { ({ data, error } = await this._sb.from('events').select('*')); }
+    catch (e) { this._setSync('offline'); return; }
+    if (error || !Array.isArray(data)) { this._setSync('offline'); return; }
+    let changed = false;
+    for (const row of data) {
+      if (this._queue.has(row.id)) continue;           // écriture locale en attente = prioritaire
+      const incoming = { id: row.id, action: row.action, data: row.data || {}, ts: row.ts, deleted: !!row.deleted };
+      const local = this._byId.get(row.id);
+      if (!local) { this._cache.push(incoming); this._byId.set(row.id, incoming); changed = true; }
+      else { Object.assign(local, incoming); changed = true; } // serveur autoritaire
+    }
+    if (changed) this._save();
+    this._setSync(this._queue.size ? 'pending' : 'ok');
+  },
+
+  _subscribeRealtime() {
+    if (!this._sb || this._channel) return;
+    this._channel = this._sb
+      .channel('events-sync')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'events' },
+        (payload) => this._applyRealtime(payload.new || payload.old))
+      .subscribe();
+  },
+
+  _applyRealtime(row) {
+    if (!row || !row.id) return;
+    this._loadQueue();
+    if (this._queue.has(row.id)) return;               // notre propre écriture en attente : ignorer l'écho
+    this._load();
+    const incoming = { id: row.id, action: row.action, data: row.data || {}, ts: row.ts, deleted: !!row.deleted };
+    const local = this._byId.get(row.id);
+    if (local &&
+        local.ts === incoming.ts &&
+        !!local.deleted === incoming.deleted &&
+        JSON.stringify(local.data) === JSON.stringify(incoming.data)) {
+      return;                                          // écho identique : rien à faire
+    }
+    if (local) Object.assign(local, incoming);
+    else { this._cache.push(incoming); this._byId.set(row.id, incoming); }
+    this._save();
+  },
+
+  async _flush() {
+    if (this._flushing || !this._authed || !this._sb) return;
+    this._loadQueue();
+    if (this._queue.size === 0) { this._setSync('ok'); return; }
+    this._flushing = true;
+    this._setSync('pending');
+    try {
+      const rows = Array.from(this._queue.values());
+      const { error } = await this._sb.from('events').upsert(rows, { onConflict: 'id' });
+      if (error) throw error;
+      // Retire les lignes envoyées, sauf si ré-écrites entre-temps (pendant l'await)
+      for (const r of rows) {
+        const cur = this._queue.get(r.id);
+        if (cur && cur.ts === r.ts && !!cur.deleted === !!r.deleted &&
+            JSON.stringify(cur.data) === JSON.stringify(r.data)) {
+          this._queue.delete(r.id);
+        }
+      }
+      this._saveQueue();
+      this._setSync(this._queue.size ? 'pending' : 'ok');
+    } catch (e) {
+      this._setSync('offline');                        // on garde la file : retry au prochain flush / retour online
+    } finally {
+      this._flushing = false;
+      if (this._authed && this._queue.size) setTimeout(() => this._flush(), 1000);
+    }
+  },
+
+  _setSync(state) {
+    this._syncState = state;
+    if (typeof updateSyncPill === 'function') updateSyncPill(state);
+  },
 };
 
 /* ---------- Configuration des actions ----------
@@ -692,6 +891,61 @@ function toast(msg) {
 function vibrate() { if (navigator.vibrate) navigator.vibrate(15); }
 function escapeHtml(s) { return String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
 
+/* ---------- Écran de déverrouillage + pastille de synchro (Phase 3) ---------- */
+function showLockScreen(blocking = true) {
+  const el = document.getElementById('lockScreen');
+  const later = document.getElementById('pinLater');
+  if (!el) return;
+  el.hidden = false;
+  if (later) later.hidden = !!blocking;   // au vrai 1er lancement (aucune donnée), pas d'échappatoire
+  const input = document.getElementById('pinInput');
+  if (input) setTimeout(() => input.focus(), 50);
+}
+function hideLockScreen() {
+  const el = document.getElementById('lockScreen');
+  if (el) el.hidden = true;
+}
+function wireLockScreen() {
+  const el = document.getElementById('lockScreen');
+  if (!el) return;
+  const input = document.getElementById('pinInput');
+  const btn = document.getElementById('pinSubmit');
+  const err = document.getElementById('pinError');
+  const later = document.getElementById('pinLater');
+  const submit = async () => {
+    const val = input.value.trim();
+    if (!val) return;
+    btn.disabled = true; err.textContent = '';
+    try {
+      await Store.signIn(val);
+      input.value = '';
+      hideLockScreen();
+      renderCurrent();
+    } catch (e) {
+      err.textContent = 'Code incorrect ou connexion impossible.';
+    } finally { btn.disabled = false; }
+  };
+  btn.onclick = submit;
+  input.addEventListener('keydown', e => { if (e.key === 'Enter') submit(); });
+  if (later) later.onclick = () => hideLockScreen();
+}
+function updateSyncPill(state) {
+  const pill = document.getElementById('syncPill');
+  if (!pill) return;
+  const map = {
+    ok:      { cls: 'sync-ok',      txt: '●', title: 'Synchronisé' },
+    pending: { cls: 'sync-pending', txt: '◍', title: 'Synchro en cours…' },
+    offline: { cls: 'sync-offline', txt: '○', title: 'Hors ligne — appuyer pour se connecter' },
+    local:   { cls: 'sync-local',   txt: '',  title: 'Mode local' },
+  };
+  const s = map[state] || map.local;
+  pill.className = 'sync-pill ' + s.cls;
+  pill.textContent = s.txt;
+  pill.title = s.title;
+  pill.hidden = (state === 'local');       // pas de pastille si la synchro n'est pas configurée
+  pill.onclick = (state === 'offline') ? () => showLockScreen(false) : null;
+}
+
 /* ---------- Navigation jour ---------- */
 document.getElementById('prevDay').onclick = () => { selectedDate = new Date(selectedDate); selectedDate.setDate(selectedDate.getDate() - 1); renderSuivi(); };
 document.getElementById('nextDay').onclick = () => {
@@ -702,13 +956,30 @@ document.getElementById('learnedAdd').onclick = addLearned;
 document.getElementById('learnedText').addEventListener('keydown', e => { if (e.key === 'Enter') addLearned(); });
 
 /* ---------- Init ---------- */
-Store.subscribe(() => { /* réservé pour la synchro temps réel (Phase 3) */ });
 // Synchro entre onglets du même appareil : un autre onglet a modifié le stockage
 window.addEventListener('storage', (e) => {
-  if (e.key !== Store.KEY) return;
-  Store._cache = null; // invalide le cache mémoire → rechargé depuis localStorage
-  renderCurrent();
+  if (e.key === Store.KEY) {
+    Store._cache = null; Store._byId = null; // invalide le cache mémoire → rechargé depuis localStorage
+    renderCurrent();
+  } else if (e.key === Store.QKEY) {
+    Store._queue = null;                      // file modifiée par un autre onglet
+  }
 });
+// Retour de connexion : on tente de vider la file d'envoi
+window.addEventListener('online', () => { if (Store._authed) Store._flush(); });
+
+wireLockScreen();
 renderTabbar();
-renderCurrent();
+renderCurrent();                              // rendu immédiat depuis le cache local (offline-first)
 setInterval(() => { if (currentView === 'suivi') { renderStatusStrip(); renderGrid(); } }, 60000);
+
+// Démarrage de la synchro (non bloquant pour l'UI)
+(async () => {
+  const ok = Store.initSupabase();
+  if (!ok) { updateSyncPill('local'); return; }   // synchro non configurée → app 100 % locale
+  const restored = await Store.restoreSession();
+  if (restored) return;                            // session valide : pull + realtime en cours
+  // Pas de session : bloquer UNIQUEMENT s'il n'y a aucune donnée locale (vrai 1er lancement)
+  if (Store.hasLocalCache()) { updateSyncPill('offline'); }
+  else { showLockScreen(true); }
+})();

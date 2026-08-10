@@ -408,3 +408,79 @@ body :is(input, textarea) { -webkit-user-select: text; user-select: text; }
 @keyframes fade { from { opacity: 0; } to { opacity: 1; } }
 @keyframes slideup { from { transform: translateY(100%); } to { transform: translateY(0); } }
 
+/* ---------- Pastille de synchro (Phase 3) ---------- */
+.sync-pill {
+  position: fixed;
+  top: calc(var(--safe-top) + 10px);
+  right: 12px;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  border: none;
+  font-size: 13px;
+  line-height: 26px;
+  text-align: center;
+  color: #fff;
+  cursor: default;
+  z-index: 60;
+  box-shadow: var(--shadow);
+  padding: 0;
+}
+.sync-pill.sync-ok      { background: #8EBA73; }           /* vert : synchronisé */
+.sync-pill.sync-pending { background: #D9C163; }           /* jaune : en cours */
+.sync-pill.sync-offline { background: #C7774A; cursor: pointer; } /* orange : hors ligne, cliquable */
+.sync-pill[hidden]      { display: none; }
+
+/* ---------- Écran de déverrouillage (Phase 3) ---------- */
+.lock-screen {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: linear-gradient(150deg, #CF8AB3 0%, #80B4D7 100%);
+}
+.lock-screen[hidden] { display: none; }
+.lock-card {
+  width: 100%;
+  max-width: 340px;
+  background: var(--surface);
+  border-radius: var(--radius);
+  padding: 28px 22px 22px;
+  text-align: center;
+  box-shadow: var(--shadow);
+  animation: fade 0.25s ease;
+}
+.lock-emoji { font-size: 44px; }
+.lock-title { font-size: 22px; margin: 8px 0 2px; }
+.lock-sub { font-size: 14px; color: var(--text-soft); margin: 0 0 18px; line-height: 1.4; }
+.lock-input {
+  width: 100%;
+  font-size: 17px;
+  padding: 14px 16px;
+  border: 2px solid var(--line);
+  border-radius: 14px;
+  background: var(--surface-2);
+  color: var(--text);
+  text-align: center;
+  outline: none;
+  font-family: inherit;
+}
+.lock-input:focus { border-color: #CF8AB3; }
+.lock-error { min-height: 18px; color: #c0392b; font-size: 13px; margin: 8px 0 4px; }
+.lock-btn { width: 100%; --accent: #CF8AB3; }
+.lock-later {
+  display: block;
+  width: 100%;
+  margin-top: 12px;
+  background: transparent;
+  border: none;
+  color: var(--text-soft);
+  font-size: 15px;
+  font-family: inherit;
+  cursor: pointer;
+}
+.lock-later[hidden] { display: none; }
+

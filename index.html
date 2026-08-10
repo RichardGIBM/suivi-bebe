@@ -14,7 +14,7 @@
   <meta name="apple-mobile-web-app-status-bar-style" content="default" />
   <meta name="apple-mobile-web-app-title" content="Suivi Bébé" />
 
-  <link rel="stylesheet" href="styles.css?v=13" />
+  <link rel="stylesheet" href="styles.css?v=14" />
 </head>
 <body>
   <div id="app">
@@ -70,8 +70,24 @@
 
   </div>
 
+  <!-- Pastille d'état de synchro (masquée si synchro non configurée) -->
+  <button class="sync-pill" id="syncPill" hidden aria-label="État de synchronisation"></button>
+
   <!-- Barre d'onglets -->
   <nav class="tabbar" id="tabbar"></nav>
+
+  <!-- Écran de déverrouillage (synchro partagée) -->
+  <div class="lock-screen" id="lockScreen" hidden>
+    <div class="lock-card">
+      <div class="lock-emoji">🍼</div>
+      <h1 class="lock-title">Suivi Bébé</h1>
+      <p class="lock-sub">Entre le code partagé pour synchroniser les deux téléphones.</p>
+      <input type="password" inputmode="text" autocomplete="current-password" class="lock-input" id="pinInput" placeholder="Code partagé" />
+      <div class="lock-error" id="pinError"></div>
+      <button class="btn btn-primary lock-btn" id="pinSubmit">Déverrouiller</button>
+      <button class="lock-later" id="pinLater" hidden>Plus tard</button>
+    </div>
+  </div>
 
   <!-- Bottom sheet -->
   <div class="sheet-backdrop" id="sheetBackdrop" hidden>
@@ -84,7 +100,9 @@
   <!-- Toast -->
   <div class="toast" id="toast" hidden></div>
 
-  <script src="app.js?v=13"></script>
+  <script src="vendor/supabase.js"></script>
+  <script src="config.js?v=14"></script>
+  <script src="app.js?v=14"></script>
   <script>
     // Enregistrement du service worker (PWA hors-ligne)
     if ('serviceWorker' in navigator) {
