@@ -273,6 +273,7 @@ body :is(input, textarea) { -webkit-user-select: text; user-select: text; }
 .stepper .value small { font-size: 18px; font-weight: 600; color: var(--text-soft); }
 .presets { display: flex; gap: 8px; justify-content: center; flex-wrap: wrap; margin-top: 6px; }
 .preset { border: 1px solid var(--line); background: var(--surface); border-radius: 20px; padding: 8px 14px; font-size: 14px; cursor: pointer; color: var(--text-soft); }
+.preset.selected { border-color: var(--accent, var(--c-biberon)); background: var(--surface-2); color: var(--text); font-weight: 600; }
 
 /* Réglage de l'heure (− / + = ±10 min) */
 .time-edit { display: flex; align-items: center; justify-content: center; gap: 14px; margin-top: 8px; }

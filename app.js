@@ -635,7 +635,7 @@ const FORMS = {
           <button type="button" class="chip${sel('les deux')}" data-v="les deux">Les deux</button>
         </div>
         <div class="sheet-section-label">Durée (optionnel)</div>
-        <div class="presets" id="durations">
+        <div class="presets" id="durations" style="--accent:${color}">
           ${[5, 10, 15, 20, 30].map(v => `<button type="button" class="preset${dsel(v)}" data-v="${v}">${v} min</button>`).join('')}
         </div>`;
     },
