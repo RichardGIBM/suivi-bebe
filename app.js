@@ -16,11 +16,22 @@ const Store = {
 
   _load() {
     if (this._cache) return this._cache;
-    try { this._cache = JSON.parse(localStorage.getItem(this.KEY)) || []; }
-    catch { this._cache = []; }
+    try {
+      const parsed = JSON.parse(localStorage.getItem(this.KEY));
+      this._cache = Array.isArray(parsed) ? parsed : [];
+    } catch { this._cache = []; }
     return this._cache;
   },
-  _save() { localStorage.setItem(this.KEY, JSON.stringify(this._cache)); this._notify(); },
+  _save() {
+    try {
+      localStorage.setItem(this.KEY, JSON.stringify(this._cache));
+    } catch (e) {
+      // Stockage plein, bloqué, ou navigation privée : on prévient au lieu de planter
+      if (typeof toast === 'function') toast('⚠️ Impossible d’enregistrer (stockage indisponible)');
+      return;
+    }
+    this._notify();
+  },
 
   all() { return [...this._load()].sort((a, b) => new Date(b.ts) - new Date(a.ts)); },
   byDay(date) { const k = ymd(date); return this.all().filter(e => ymd(new Date(e.ts)) === k); },
@@ -139,7 +150,16 @@ function relative(ts) {
   if (h < 24) return `il y a ${h}h${m ? String(m).padStart(2, '0') : ''}`;
   return `il y a ${Math.floor(h / 24)} j`;
 }
-function activeSleep() { return Store.all().find(e => e.action === 'sommeil' && !(e.data && e.data.end)) || null; }
+// Dodo en cours = sommeil sans fin, démarré il y a moins de 16 h.
+// (autorise une nuit complète, mais ignore un dodo oublié qui gonflerait sans fin)
+const SLEEP_MAX_MS = 16 * 60 * 60 * 1000;
+function activeSleep() {
+  return Store.all().find(e =>
+    e.action === 'sommeil' &&
+    !(e.data && e.data.end) &&
+    (Date.now() - new Date(e.ts).getTime()) < SLEEP_MAX_MS
+  ) || null;
+}
 
 /* ---------- Éditeur d'heure réutilisable (− / + = ±10 min) ---------- */
 function timeFieldHTML(date, label = 'Heure') {
@@ -154,15 +174,26 @@ function timeFieldHTML(date, label = 'Heure') {
 // Branche les ± d'un champ heure. root = élément conteneur, baseDate = jour de référence.
 function wireTimeField(root, baseDate, onChange) {
   const input = root.querySelector('.time-input');
-  const getDate = () => {
+  // Minutes depuis minuit à partir du champ ; null si vide/invalide
+  const readTotal = () => {
     const [h, m] = input.value.split(':').map(Number);
-    const d = new Date(baseDate); d.setHours(h, m, 0, 0); return d;
+    if (!Number.isFinite(h) || !Number.isFinite(m)) return null;
+    return h * 60 + m;
+  };
+  const getDate = () => {
+    const total = readTotal();
+    const d = new Date(baseDate);
+    // Repli sur l'heure de base si le champ a été vidé/est invalide
+    if (total === null) return d;
+    d.setHours(0, total, 0, 0);
+    return d;
   };
   const fire = () => onChange && onChange(getDate());
   root.querySelectorAll('.time-step').forEach(btn => {
     btn.onclick = () => {
-      const [h, m] = input.value.split(':').map(Number);
-      let total = h * 60 + m + Number(btn.dataset.step);
+      const base = readTotal();
+      const from = base === null ? (baseDate.getHours() * 60 + baseDate.getMinutes()) : base;
+      let total = from + Number(btn.dataset.step);
       total = Math.max(0, Math.min(24 * 60 - 1, total));
       const d = new Date(baseDate); d.setHours(0, total, 0, 0);
       input.value = hhmmInput(d); fire();
@@ -672,6 +703,12 @@ document.getElementById('learnedText').addEventListener('keydown', e => { if (e.
 
 /* ---------- Init ---------- */
 Store.subscribe(() => { /* réservé pour la synchro temps réel (Phase 3) */ });
+// Synchro entre onglets du même appareil : un autre onglet a modifié le stockage
+window.addEventListener('storage', (e) => {
+  if (e.key !== Store.KEY) return;
+  Store._cache = null; // invalide le cache mémoire → rechargé depuis localStorage
+  renderCurrent();
+});
 renderTabbar();
 renderCurrent();
 setInterval(() => { if (currentView === 'suivi') { renderStatusStrip(); renderGrid(); } }, 60000);
