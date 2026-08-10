@@ -408,27 +408,25 @@ body :is(input, textarea) { -webkit-user-select: text; user-select: text; }
 @keyframes fade { from { opacity: 0; } to { opacity: 1; } }
 @keyframes slideup { from { transform: translateY(100%); } to { transform: translateY(0); } }
 
-/* ---------- Pastille de synchro (Phase 3) ---------- */
+/* ---------- Pastille de synchro (Phase 3) : petit point discret, centré tout en bas ---------- */
 .sync-pill {
   position: fixed;
-  top: calc(var(--safe-top) + 10px);
-  right: 12px;
-  width: 26px;
-  height: 26px;
+  left: 50%;
+  transform: translateX(-50%);
+  bottom: calc(var(--safe-bottom) + 3px);
+  width: 10px;
+  height: 10px;
   border-radius: 50%;
   border: none;
-  font-size: 13px;
-  line-height: 26px;
-  text-align: center;
-  color: #fff;
-  cursor: default;
-  z-index: 60;
-  box-shadow: var(--shadow);
+  font-size: 0;                 /* on masque le glyphe : seule la couleur informe */
   padding: 0;
+  cursor: default;
+  z-index: 41;                  /* au-dessus de la tabbar */
+  opacity: 0.85;
 }
 .sync-pill.sync-ok      { background: #8EBA73; }           /* vert : synchronisé */
 .sync-pill.sync-pending { background: #D9C163; }           /* jaune : en cours */
-.sync-pill.sync-offline { background: #C7774A; cursor: pointer; } /* orange : hors ligne, cliquable */
+.sync-pill.sync-offline { background: #C7774A; cursor: pointer; opacity: 1; } /* orange : hors ligne, cliquable */
 .sync-pill[hidden]      { display: none; }
 
 /* ---------- Écran de déverrouillage (Phase 3) ---------- */

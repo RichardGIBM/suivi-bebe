@@ -737,7 +737,7 @@ function sheetMedicament(action) {
   openSheet(`
     <div class="sheet-title">${action.emoji} Médicament</div>
     <div class="sheet-section-label">Nom du/des médicament(s)</div>
-    <input type="text" class="text-field" id="medName" />
+    <input type="text" class="text-field" id="medName" autocomplete="off" />
     ${timeFieldHTML(defaultTs())}
     <div class="sheet-actions">
       <button class="btn btn-ghost" id="cancel">Annuler</button>

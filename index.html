@@ -14,7 +14,7 @@
   <meta name="apple-mobile-web-app-status-bar-style" content="default" />
   <meta name="apple-mobile-web-app-title" content="Suivi Bébé" />
 
-  <link rel="stylesheet" href="styles.css?v=14" />
+  <link rel="stylesheet" href="styles.css?v=15" />
 </head>
 <body>
   <div id="app">
@@ -46,7 +46,7 @@
       <section class="learned-wrap">
         <h2 class="section-label">✨ Ce que j'ai appris aujourd'hui</h2>
         <div class="learned-input">
-          <input type="text" id="learnedText" />
+          <input type="text" id="learnedText" autocomplete="off" autocapitalize="sentences" />
           <button id="learnedAdd">Ajouter</button>
         </div>
         <ul class="learned-today" id="learnedToday"></ul>
@@ -82,7 +82,10 @@
       <div class="lock-emoji">🍼</div>
       <h1 class="lock-title">Suivi Bébé</h1>
       <p class="lock-sub">Entre le code partagé pour synchroniser les deux téléphones.</p>
-      <input type="password" inputmode="text" autocomplete="current-password" class="lock-input" id="pinInput" placeholder="Code partagé" />
+      <!-- Champ identifiant fictif : donne une cible à l'autocomplétion du navigateur
+           pour qu'il n'aille PAS proposer un identifiant dans les champs texte de l'app. -->
+      <input type="text" autocomplete="username" value="foyer" hidden aria-hidden="true" tabindex="-1" />
+      <input type="password" inputmode="text" autocomplete="current-password" autocapitalize="none" autocorrect="off" spellcheck="false" class="lock-input" id="pinInput" placeholder="Code partagé" />
       <div class="lock-error" id="pinError"></div>
       <button class="btn btn-primary lock-btn" id="pinSubmit">Déverrouiller</button>
       <button class="lock-later" id="pinLater" hidden>Plus tard</button>
@@ -101,8 +104,8 @@
   <div class="toast" id="toast" hidden></div>
 
   <script src="vendor/supabase.js"></script>
-  <script src="config.js?v=14"></script>
-  <script src="app.js?v=14"></script>
+  <script src="config.js?v=15"></script>
+  <script src="app.js?v=15"></script>
   <script>
     // Enregistrement du service worker (PWA hors-ligne)
     if ('serviceWorker' in navigator) {
