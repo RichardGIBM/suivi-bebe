@@ -515,12 +515,63 @@ function renderGrid() {
     const active = a.id === 'sommeil' && !!sleep;
     btn.className = 'tile' + (active ? ' tile-active' : '');
     btn.style.setProperty('--tile-color', a.color);
+    const badge = tileStat(a.id);
     btn.innerHTML = `
       <span class="emoji">${a.emoji}</span>
-      <span class="name">${a.name}</span>`;
+      <span class="name">${a.name}</span>
+      ${badge ? `<span class="tile-badge">${badge}</span>` : ''}`;
     btn.addEventListener('click', () => onActionTap(a));
     grid.appendChild(btn);
   });
+}
+
+// Compteur du jour affiché sur une tuile — renvoie du HTML (2 valeurs empilées),
+// '' = pas de badge :
+//   tétée   → nb / durée totale
+//   biberon → nb / quantité totale
+//   couche  → 💧 pipi / 💩 caca (le "mixte" compte dans les deux)
+//   sommeil → nb de siestes / durée totale
+function tileStat(id) {
+  const day = Store.byDay(selectedDate);
+  const evs = act => day.filter(e => e.action === act);
+  const lines = arr => arr.map(l => `<span>${l}</span>`).join('');
+
+  if (id === 'tetee') {
+    const list = evs('tetee');
+    if (!list.length) return '';
+    const dur = list.reduce((s, e) => s + (e.data && e.data.duration ? Number(e.data.duration) : 0), 0);
+    return lines(dur ? [list.length, fmtDuration(dur)] : [list.length]);
+  }
+  if (id === 'biberon') {
+    const list = evs('biberon');
+    if (!list.length) return '';
+    const ml = list.reduce((s, e) => s + (e.data && e.data.ml ? Number(e.data.ml) : 0), 0);
+    return lines(ml ? [list.length, `${ml} ml`] : [list.length]);
+  }
+  if (id === 'couche') {
+    const list = evs('couche');
+    if (!list.length) return '';
+    let pipi = 0, caca = 0;
+    list.forEach(e => {
+      const t = e.data && e.data.type;
+      if (t === 'pipi' || t === 'mixte') pipi++;
+      if (t === 'caca' || t === 'mixte') caca++;
+    });
+    if (!pipi && !caca) return lines([list.length]);   // couches sans type renseigné
+    return lines([`💧 ${pipi}`, `💩 ${caca}`]);
+  }
+  if (id === 'sommeil') {
+    const isToday = isSameDay(selectedDate, startOfDay(new Date()));
+    let total = 0, n = 0;
+    evs('sommeil').forEach(e => {
+      if (e.data && e.data.end) { total += durMin(e.ts, e.data.end); n++; }
+      else if (isToday && (Date.now() - new Date(e.ts).getTime()) < SLEEP_MAX_MS) {
+        total += durMin(e.ts, new Date()); n++;         // dodo en cours
+      }
+    });
+    return n ? lines([n, fmtDuration(total)]) : '';
+  }
+  return '';
 }
 
 function renderLearnedToday() {
