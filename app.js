@@ -303,11 +303,34 @@ const ACTION_MAP = Object.fromEntries(ACTIONS.map(a => [a.id, a]));
 const TILE_ACTIONS = ACTIONS.filter(a => a.place === 'tile');
 const CHECKLIST_ACTIONS = ACTIONS.filter(a => a.place === 'checklist');
 
-/* Vues (barre d'onglets) — extensible : ajouter 'stats', 'calendrier' plus tard */
+/* Vues (barre d'onglets) — extensible : ajouter 'calendrier' plus tard */
 const VIEWS = [
   { id: 'suivi',  label: 'Suivi',  emoji: '📋' },
   { id: 'appris', label: 'Appris', emoji: '✨' },
+  { id: 'stats',  label: 'Stats',  emoji: '📊' },
 ];
+
+/* Fiabilité des données (précision) — les stats ne doivent pas afficher de
+   faux zéros ni de journées partielles comme si elles étaient complètes.
+   - Naissance le 6 août 2026 à 5h25 → le 6 août est un jour PARTIEL (exclu des
+     moyennes, affiché atténué), les tétées/biberons sont fiables dès la naissance.
+   - Couches & sommeil : saisie fiable seulement à partir d'AUJOURD'HUI (11 août).
+     Avant, on n'affiche PAS 0 (donnée absente ≠ zéro) : c'est un trou de données. */
+const DATA_START = {
+  repas:   new Date(2026, 7, 6),    // depuis la naissance (mois 0-indexé : 7 = août)
+  couche:  new Date(2026, 7, 11),   // fiable à partir d'aujourd'hui
+  sommeil: new Date(2026, 7, 11),
+};
+// 1er jour CIVIL COMPLET (le 6 août est incomplet : née à 5h25) → 1re journée moyennable
+const FIRST_COMPLETE_DAY = new Date(2026, 7, 7);
+
+/* Couleurs de dataviz VALIDÉES (charte : CVD-safe, contraste ≥ 3:1 sur fond clair).
+   Distinctes des pastels d'UI (--c-*), qui échouent au validateur pour des marques
+   de données (2 séries sein/biberon indiscernables même en vision normale).
+     sein    = orange  #eb6834   \  paire catégorielle CVD-safe (ΔE ~25)
+     biberon = bleu    #2a78d6   /  → carte « Sein vs Biberon » + « Part du biberon »
+     vert    = #6f9e57  (sommeil / couches : séries uniques, contraste OK) */
+const CHART = { sein: '#eb6834', biberon: '#2a78d6', vert: '#6f9e57', grid: '#e7e8ec', ink: '#8a8a93' };
 
 /* Résumé lisible d'un événement */
 function describe(ev) {
@@ -327,6 +350,7 @@ function describe(ev) {
 /* ---------- État ---------- */
 let selectedDate = startOfDay(new Date());
 let currentView = 'suivi';
+let statsPeriod = 7;              // fenêtre de la vue Stats (7 / 14 / 30 jours)
 
 /* ---------- Helpers date/heure ---------- */
 function startOfDay(d) { const x = new Date(d); x.setHours(0, 0, 0, 0); return x; }
@@ -434,6 +458,7 @@ function showView(id) {
 function renderCurrent() {
   renderTabbar();
   if (currentView === 'suivi') renderSuivi();
+  else if (currentView === 'stats') renderStats();
   else if (currentView === 'appris') renderAppris();
 }
 
@@ -647,6 +672,458 @@ function renderAppris() {
     item.onclick = () => openLearnedSheet(ev);
     dayBox.appendChild(item);
   });
+}
+
+/* ============================================================
+   VUE STATS (onglet 📊)
+   Consomme UNIQUEMENT la couche pure Stats.compute (toute la précision
+   est là). Aucune donnée dérivée n'est stockée : tout est recalculé.
+   ============================================================ */
+
+/* ---------- Petits graphes SVG (charte dataviz appliquée) ----------
+   viewBox uniforme (pas de distorsion), marques fines, extrémités arrondies
+   ancrées à la ligne de base, écart de 2 px entre segments empilés.
+   `null` dans un tableau = PAS de donnée (jamais un zéro) → aucune barre.
+   `atten` = indices atténués (jour partiel : aujourd'hui / naissance). */
+function topRounded(x, y, w, h, r) {
+  r = Math.max(0, Math.min(r, w / 2, h));
+  const f = n => n.toFixed(1);
+  return `M${f(x)},${f(y + h)} L${f(x)},${f(y + r)} Q${f(x)},${f(y)} ${f(x + r)},${f(y)} `
+       + `L${f(x + w - r)},${f(y)} Q${f(x + w)},${f(y)} ${f(x + w)},${f(y + r)} L${f(x + w)},${f(y + h)} Z`;
+}
+/* Axe Y : borne haute « jolie » (1·1,5·2·3·4·5·7 × 10ⁿ) → graduations lisibles. */
+function niceMax(v) {
+  if (!(v > 0)) return 1;
+  const pow = Math.pow(10, Math.floor(Math.log10(v))), nrm = v / pow;
+  const steps = [1, 1.5, 2, 3, 4, 5, 6, 8, 10];
+  let s = 10; for (const k of steps) { if (nrm <= k + 1e-9) { s = k; break; } }
+  return s * pow;
+}
+/* Libellé d'axe compact pour une durée (minutes) : « 20m », « 1h30 », « 7h », « 14h ». */
+function durAxis(min) {
+  min = Math.round(min);
+  if (min < 60) return `${min}m`;
+  const h = Math.floor(min / 60), m = min % 60;
+  return m === 0 ? `${h}h` : `${h}h${String(m).padStart(2, '0')}`;
+}
+/* Borne haute « jolie » pour une durée (min) : valeur PAIRE → point milieu net
+   (ex. 840 → 0 / 7h / 14h). Au-delà de la liste, arrondi au 12 h supérieur. */
+function niceDurMax(min) {
+  const steps = [20, 40, 60, 120, 180, 240, 360, 480, 600, 720, 840, 960, 1080, 1200, 1440];
+  for (const s of steps) if (min <= s + 1e-9) return s;
+  return Math.ceil(min / 720) * 720 || 20;
+}
+/* Échelle graduée à ~`target` intervalles réguliers (pas 1/2/5 ×10ⁿ) → renvoie
+   {max, ticks}. Plusieurs lignes d'ordonnée régulières permettent de LIRE une
+   barre sans étiquette (14/30 j) en la projetant entre deux graduations. */
+function niceScale(dataMax, target = 4) {
+  if (!(dataMax > 0)) return { max: 1, ticks: [0, 1] };
+  const rough = dataMax / target;
+  const pow = Math.pow(10, Math.floor(Math.log10(rough)));
+  const n = rough / pow;
+  // Pas entier ≥ 1 : les séries sont des comptages/volumes entiers → jamais de
+  // graduation fractionnaire (ex. 0,5) ni d'étiquettes en double après arrondi.
+  const step = Math.max(1, Math.round((n <= 1 ? 1 : n <= 2 ? 2 : n <= 5 ? 5 : 10) * pow));
+  const max = Math.ceil(dataMax / step - 1e-9) * step;
+  const ticks = [];
+  for (let v = 0; v <= max + step * 1e-6; v += step) ticks.push(Math.round(v));
+  return { max, ticks };
+}
+/* Idem pour une durée (min) mais avec des pas « ronds » en heures/demi-heures →
+   libellés d'axe nets (0/3h/6h/… ou 0/30m/1h/1h30/2h). */
+function niceDurScale(dataMax, target = 4) {
+  const steps = [5, 10, 15, 20, 30, 60, 90, 120, 180, 240, 360, 480, 720];
+  if (!(dataMax > 0)) return { max: 20, ticks: [0, 20] };
+  const rough = dataMax / target;
+  let step = steps[steps.length - 1];
+  for (const s of steps) if (s >= rough) { step = s; break; }
+  const max = Math.ceil(dataMax / step - 1e-9) * step;
+  const ticks = [];
+  for (let v = 0; v <= max + step * 1e-6; v += step) ticks.push(v);
+  return { max, ticks };
+}
+/* Valeur au-dessus d'une barre, affichée seulement si elle tient dans la cellule
+   (sinon l'axe Y prend le relais — évite l'illisible sur 14/30 jours). */
+function barValue(txt, cx, y, cellW, fill) {
+  if (txt == null || txt === '' || txt.length * 4.9 > cellW - 1) return '';
+  return `<text x="${cx.toFixed(1)}" y="${y.toFixed(1)}" text-anchor="middle" font-size="8" font-weight="700" fill="${fill || CHART.ink}" font-variant-numeric="tabular-nums">${txt}</text>`;
+}
+
+/* Barres simples avec axes (ordonnée graduée 0→max, abscisse = libellés jour). */
+function statChartBars(values, o = {}) {
+  const color = o.color || CHART.vert, W = o.W || 300, H = o.H || 66;
+  const n = values.length || 1, atten = o.atten || new Set(), hasX = !!o.labels;
+  const isDur = !!o.dur;
+  const yfmt = isDur ? (v => v === 0 ? '0' : durAxis(v)) : (v => String(Math.round(v)));
+  const dataMax = Math.max(...values.filter(v => v != null), 0);
+  // Graduations régulières (0 → max en ~4 pas) : lire une barre sans étiquette en
+  // la projetant entre deux lignes. midline:false → axe minimal 0/max (cartes compactes).
+  let max, ticks;
+  if (o.midline === false) {
+    max = isDur ? niceDurMax(dataMax) : niceMax(dataMax);
+    ticks = [0, max];
+  } else {
+    const sc = isDur ? niceDurScale(dataMax, o.ticks || 4) : niceScale(dataMax, o.ticks || 4);
+    max = sc.max; ticks = sc.ticks;
+  }
+  const labelW = Math.max(...ticks.map(v => yfmt(v).length));
+  const ML = o.ML != null ? o.ML : Math.max(16, Math.round(labelW * 5.6 + 5));   // marge Y auto-dimensionnée au libellé
+  const MT = 10, MB = hasX ? 14 : 6;
+  const plotW = W - ML, plotH = H - MT - MB, base = MT + plotH;
+  const gap = n > 20 ? 1.2 : 2, bw = (plotW - gap * (n - 1)) / n, rx = Math.min(3, bw / 2);
+  const xC = i => ML + i * (bw + gap) + bw / 2;
+  const yAt = v => base - (max > 0 ? (v / max) * plotH : 0);
+  let body = '';
+  ticks.forEach(v => {
+    const gy = yAt(v);
+    body += `<line x1="${ML}" y1="${gy.toFixed(1)}" x2="${W}" y2="${gy.toFixed(1)}" stroke="${CHART.grid}" stroke-width="1"${v !== 0 ? ' stroke-dasharray="3 3"' : ''}/>`;
+    body += `<text x="${(ML - 3).toFixed(1)}" y="${(gy + 3).toFixed(1)}" text-anchor="end" font-size="8" fill="${CHART.ink}">${yfmt(v)}</text>`;
+  });
+  values.forEach((v, i) => {
+    if (v == null || v <= 0) return;
+    const x = ML + i * (bw + gap), h = Math.max(1.5, (v / max) * plotH);
+    body += `<path d="${topRounded(x, base - h, bw, h, rx)}" fill="${color}"${atten.has(i) ? ' fill-opacity="0.38"' : ''}/>`;
+    if (o.valfmt) body += barValue(o.valfmt(v), x + bw / 2, base - h - 2.5, bw + gap, CHART.ink);
+  });
+  if (hasX) o.labels.forEach((l, i) => { if (!l) return; const anc = i === 0 ? 'start' : (i === n - 1 ? 'end' : 'middle'); body += `<text x="${xC(i).toFixed(1)}" y="${(H - 3).toFixed(1)}" text-anchor="${anc}" font-size="8" fill="${CHART.ink}">${l}</text>`; });
+  return `<svg viewBox="0 0 ${W} ${H}" class="spark" preserveAspectRatio="xMidYMid meet" role="img" aria-hidden="true">${body}</svg>`;
+}
+
+/* Barres empilées sein (bas, orange) + biberon (haut, bleu) avec axes + compteurs. */
+function statChartStacked(seinA, bibA, o = {}) {
+  const W = o.W || 300, H = o.H || 90, n = seinA.length || 1, atten = o.atten || new Set(), hasX = !!o.labels;
+  const totals = seinA.map((s, i) => (s == null && bibA[i] == null) ? null : (s || 0) + (bibA[i] || 0));
+  const sc = niceScale(Math.max(...totals.filter(v => v != null), 0), o.ticks || 4);
+  const max = sc.max, ticks = sc.ticks;
+  const ML = o.ML != null ? o.ML : Math.max(16, Math.round(String(Math.round(max)).length * 5.6 + 5));
+  const MT = 10, MB = hasX ? 14 : 6;
+  const plotW = W - ML, plotH = H - MT - MB, base = MT + plotH, segGap = 2;
+  const gap = n > 20 ? 1.2 : 2, bw = (plotW - gap * (n - 1)) / n, rx = Math.min(3, bw / 2);
+  const xC = i => ML + i * (bw + gap) + bw / 2;
+  const yAt = v => base - (max > 0 ? (v / max) * plotH : 0);
+  let body = '';
+  ticks.forEach(v => {
+    const gy = yAt(v);
+    body += `<line x1="${ML}" y1="${gy.toFixed(1)}" x2="${W}" y2="${gy.toFixed(1)}" stroke="${CHART.grid}" stroke-width="1"${v !== 0 ? ' stroke-dasharray="3 3"' : ''}/>`;
+    body += `<text x="${(ML - 3).toFixed(1)}" y="${(gy + 3).toFixed(1)}" text-anchor="end" font-size="8" fill="${CHART.ink}">${Math.round(v)}</text>`;
+  });
+  seinA.forEach((s0, i) => {
+    if (s0 == null && bibA[i] == null) return;
+    const s = s0 || 0, b = bibA[i] || 0, x = ML + i * (bw + gap), op = atten.has(i) ? ' fill-opacity="0.38"' : '';
+    const sh = s > 0 ? (s / max) * plotH : 0, bh = b > 0 ? (b / max) * plotH : 0;
+    let topLower = base;
+    if (sh > 0) { body += `<rect x="${x.toFixed(1)}" y="${(base - sh).toFixed(1)}" width="${bw.toFixed(1)}" height="${sh.toFixed(1)}" fill="${CHART.sein}"${op}/>`; topLower = base - sh - segGap; }
+    if (bh > 0) body += `<path d="${topRounded(x, topLower - bh, bw, bh, rx)}" fill="${CHART.biberon}"${op}/>`;
+    if (bw >= 9) {   // compteurs dans les segments si la place le permet
+      if (sh >= 10) body += `<text x="${(x + bw / 2).toFixed(1)}" y="${(base - sh / 2 + 3).toFixed(1)}" text-anchor="middle" font-size="8" font-weight="700" fill="#fff">${s}</text>`;
+      if (bh >= 10) body += `<text x="${(x + bw / 2).toFixed(1)}" y="${(topLower - bh / 2 + 3).toFixed(1)}" text-anchor="middle" font-size="8" font-weight="700" fill="#fff">${b}</text>`;
+    }
+  });
+  if (hasX) o.labels.forEach((l, i) => { if (!l) return; const anc = i === 0 ? 'start' : (i === n - 1 ? 'end' : 'middle'); body += `<text x="${xC(i).toFixed(1)}" y="${(H - 3).toFixed(1)}" text-anchor="${anc}" font-size="8" fill="${CHART.ink}">${l}</text>`; });
+  return `<svg viewBox="0 0 ${W} ${H}" class="spark" preserveAspectRatio="xMidYMid meet" role="img" aria-hidden="true">${body}</svg>`;
+}
+
+/* Courbe (%) avec axes gradués 0 / 50 / 100 + valeur de fin. */
+function statChartLine(values, o = {}) {
+  const W = o.W || 300, H = o.H || 78, n = values.length || 1, color = o.color || CHART.biberon, max = o.max || 100;
+  const hasX = !!o.labels, ML = o.ML != null ? o.ML : 22, MR = 8, MT = 10, MB = hasX ? 14 : 6;
+  const plotW = W - ML - MR, plotH = H - MT - MB, gx2 = W - MR;
+  const xAt = i => ML + (n === 1 ? plotW / 2 : (i / (n - 1)) * plotW);
+  const yAt = v => MT + plotH - (Math.min(v, max) / max) * plotH;
+  let body = '';
+  // Repères intermédiaires 25/75 : pointillés discrets, sans étiquette (aide à projeter).
+  [25, 75].forEach(gv => {
+    const gy = yAt(gv);
+    body += `<line x1="${ML}" y1="${gy.toFixed(1)}" x2="${gx2.toFixed(1)}" y2="${gy.toFixed(1)}" stroke="${CHART.grid}" stroke-width="1" stroke-dasharray="2 3"/>`;
+  });
+  [0, 50, 100].forEach(gv => {
+    const gy = yAt(gv);
+    body += `<line x1="${ML}" y1="${gy.toFixed(1)}" x2="${gx2.toFixed(1)}" y2="${gy.toFixed(1)}" stroke="${CHART.grid}" stroke-width="1"${gv === max ? ' stroke-dasharray="3 3"' : ''}/>`;
+    body += `<text x="${(ML - 3).toFixed(1)}" y="${(gy + 3).toFixed(1)}" text-anchor="end" font-size="8" fill="${CHART.ink}">${gv}</text>`;
+  });
+  let seg = [];
+  const flush = () => {
+    if (seg.length > 1) body += `<polyline points="${seg.join(' ')}" fill="none" stroke="${color}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>`;
+    else if (seg.length === 1) { const [x, y] = seg[0].split(','); body += `<circle cx="${x}" cy="${y}" r="2.5" fill="${color}"/>`; }
+    seg = [];
+  };
+  values.forEach((v, i) => { if (v == null) flush(); else seg.push(`${xAt(i).toFixed(1)},${yAt(v).toFixed(1)}`); });
+  flush();
+  let li = -1; for (let i = values.length - 1; i >= 0; i--) if (values[i] != null) { li = i; break; }
+  if (li >= 0) {
+    const x = xAt(li), y = yAt(values[li]);
+    body += `<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="3" fill="${color}"/>`;
+    body += `<text x="${(x - 5).toFixed(1)}" y="${(y - 6).toFixed(1)}" text-anchor="end" font-size="10" font-weight="700" fill="${color}">${Math.round(values[li])} %</text>`;
+  }
+  if (hasX) o.labels.forEach((l, i) => { if (!l) return; const anc = i === 0 ? 'start' : (i === n - 1 ? 'end' : 'middle'); body += `<text x="${xAt(i).toFixed(1)}" y="${(H - 3).toFixed(1)}" text-anchor="${anc}" font-size="8" fill="${CHART.ink}">${l}</text>`; });
+  return `<svg viewBox="0 0 ${W} ${H}" class="spark" preserveAspectRatio="xMidYMid meet" role="img" aria-hidden="true">${body}</svg>`;
+}
+
+/* ---------- Rendu de la vue ---------- */
+const WK = ['D', 'L', 'M', 'M', 'J', 'V', 'S'];
+/* Libellés d'abscisse adaptés à la période : lettre du jour à 7 j ; au-delà,
+   date calendaire jj/mm espacée (dernier jour toujours affiché, pas de collision). */
+function xLabels(days, period) {
+  if (period <= 7) return days.map(d => WK[d.date.getDay()]);
+  const n = days.length, fmt = d => `${d.getDate()}/${d.getMonth() + 1}`;
+  const every = period <= 14 ? 3 : 6;
+  const keep = new Set();
+  for (let i = n - 1; i >= 0; i -= every) keep.add(i);   // aligné sur le dernier jour
+  return days.map((d, i) => keep.has(i) ? fmt(d.date) : '');
+}
+function renderStats() {
+  document.body.classList.remove('other-day');
+  const host = document.getElementById('view-stats');
+  if (!host) return;
+
+  const hasAny = Store.all().some(e => e.action !== 'appris');
+  if (!hasAny) {
+    host.innerHTML = `<header class="view-header"><h1>📊 Statistiques</h1></header>
+      <p class="appris-empty">Pas encore de données à analyser.<br>Enregistre des tétées, biberons, couches… depuis l'onglet Suivi.</p>`;
+    return;
+  }
+
+  const s = Stats.compute(Store.all(), {
+    periodDays: statsPeriod,
+    domainStart: DATA_START,
+    firstCompleteDay: FIRST_COMPLETE_DAY,
+  });
+  const days = s.days, today = s.today || {};
+  const labels = xLabels(days, statsPeriod);
+
+  // Formatage (précis : 1 décimale pour moyennes, virgule française)
+  const f0 = x => x == null ? '—' : Math.round(x).toString();
+  const f1 = x => x == null ? '—' : (Math.round(x * 10) / 10).toString().replace('.', ',');
+  const pct = x => x == null ? '—' : Math.round(x) + ' %';
+  const dur = x => x == null ? '—' : fmtDuration(Math.round(x));
+  const durLong = x => x == null ? '—' : (x >= 1440 ? `${Math.floor(x / 1440)} j ${Math.floor((x % 1440) / 60)} h` : fmtDuration(Math.round(x)));
+
+  // Séries par jour — `null` avant la fiabilité du domaine (jamais un faux zéro)
+  const seinA = days.map(d => d.dataRepas ? d.tetees : null);
+  const bibA = days.map(d => d.dataRepas ? d.biberons : null);
+  const shareA = days.map(d => (d.dataRepas && d.repas > 0) ? Math.round(d.bottleShare * 100) : null);
+  const volA = days.map(d => d.dataRepas ? d.volumeMl : null);
+  const teteeDurA = days.map(d => d.dataRepas ? d.teteeDurMin : null);
+  const sleepA = days.map(d => d.dataSommeil ? d.sleepMin : null);
+  const longA = days.map(d => d.dataSommeil ? d.longestSleepMin : null);
+  const pipiA = days.map(d => d.dataCouche ? d.pipis : null);
+  const cacaA = days.map(d => d.dataCouche ? d.cacas : null);
+
+  // Atténuation : jours partiels (aujourd'hui / naissance) ayant des données
+  const attSet = flag => new Set(days.map((d, i) => (!d.complete && d[flag]) ? i : -1).filter(i => i >= 0));
+  const attFeeds = attSet('dataRepas'), attCouche = attSet('dataCouche'), attSleep = attSet('dataSommeil');
+
+  const av = s.averages, pe = s.period;
+  const periodBtns = [7, 14, 30].map(p =>
+    `<button class="per-btn${statsPeriod === p ? ' active' : ''}" data-p="${p}">${p} j</button>`).join('');
+
+  // Bandeau "Aujourd'hui" (jour partiel — valeurs brutes à cette heure, sans moyenne trompeuse)
+  const todayShare = today.repas > 0 ? Math.round(today.bottleShare * 100) + ' %' : '—';
+  const banner = `
+    <div class="today-banner">
+      <div class="tb-title">Aujourd'hui <span>· à cette heure</span></div>
+      <div class="tb-chips">
+        <div class="tb-chip"><span class="tb-v">${f0(today.repas)}</span><span class="tb-l">repas</span></div>
+        <div class="tb-chip"><span class="tb-v">${todayShare}</span><span class="tb-l">biberon</span></div>
+        <div class="tb-chip"><span class="tb-v">${dur(today.sleepMin)}</span><span class="tb-l">sommeil</span></div>
+        <div class="tb-chip"><span class="tb-v">${f0(today.pipis)}/${f0(today.cacas)}</span><span class="tb-l">💧/💩</span></div>
+      </div>
+    </div>`;
+
+  const legendFeeds = `<div class="sc-legend"><span class="lg"><i style="background:${CHART.sein}"></i>Sein</span><span class="lg"><i style="background:${CHART.biberon}"></i>Biberon</span></div>`;
+  const card = (o) => `
+    <div class="stat-card${o.wide ? ' stat-card-wide' : ''}">
+      <div class="sc-head"><div class="sc-title">${o.title}</div>${o.legend || ''}</div>
+      <div class="sc-hero">${o.hero}${o.sub ? `<span class="sc-sub">${o.sub}</span>` : ''}</div>
+      <div class="sc-chart">${o.chart}</div>
+    </div>`;
+
+  const cards = [
+    card({ // 1 ★ Sein vs Biberon
+      wide: true, title: 'Sein vs Biberon', legend: legendFeeds,
+      hero: `${f1(av.repas)}`, sub: 'repas / j',
+      chart: statChartStacked(seinA, bibA, { atten: attFeeds, labels, W: 300, H: 92 }),
+    }),
+    card({ // 2 ★ Part du biberon
+      wide: true, title: 'Part du biberon', hero: pct(pe.bottleShare == null ? null : pe.bottleShare * 100),
+      sub: 'du lait donné au biberon',
+      chart: statChartLine(shareA, { color: CHART.biberon, labels, W: 300, H: 80 }),
+    }),
+    card({ // 3 Volume bu (biberon, bleu)
+      title: 'Volume bu', hero: `${f0(av.volumeMl)}`, sub: 'ml / j (biberon)',
+      chart: statChartBars(volA, { color: CHART.biberon, atten: attFeeds, labels, W: 150, H: 74, valfmt: v => String(v) }),
+    }),
+    card({ // 4 Temps au sein (tétées, orange) — en face du volume biberon
+      title: 'Temps au sein', hero: dur(av.teteeDurMin), sub: '/ j (tétées)',
+      chart: statChartBars(teteeDurA, { color: CHART.sein, atten: attFeeds, labels, W: 150, H: 74, dur: true }),
+    }),
+    card({ // 5 Sommeil total
+      title: 'Sommeil', hero: dur(av.sleepMin), sub: '/ j',
+      chart: statChartBars(sleepA, { color: CHART.vert, atten: attSleep, labels, W: 150, H: 74, dur: true }),
+    }),
+    card({ // 6 Plus long sommeil
+      title: 'Plus long sommeil', hero: dur(av.longestSleepMin), sub: '/ j en moyenne',
+      chart: statChartBars(longA, { color: CHART.vert, atten: attSleep, labels, W: 150, H: 74, dur: true }),
+    }),
+    card({ // 7 Pipis & Cacas
+      wide: true, title: 'Pipis & Cacas',
+      hero: `<span class="sc-duo">💧 ${f1(av.pipis)}</span><span class="sc-duo">💩 ${f1(av.cacas)}</span>`,
+      sub: '/ j en moyenne',
+      chart: `<div class="sc-row"><span class="sc-rowlab">💧 Pipis</span>${statChartBars(pipiA, { color: CHART.vert, atten: attCouche, W: 232, H: 50, ML: 14, midline: false, valfmt: v => String(v) })}</div>
+              <div class="sc-row sc-row-sep"><span class="sc-rowlab">💩 Cacas</span>${statChartBars(cacaA, { color: CHART.vert, atten: attCouche, W: 232, H: 50, ML: 14, midline: false, valfmt: v => String(v) })}</div>`,
+    }),
+  ].join('');
+
+  // Détails (repliés)
+  const medsHtml = pe.meds.length
+    ? pe.meds.map(m => `<div class="dt-med">${escapeHtml(m.name)} · ${new Date(m.ts).toLocaleDateString('fr-FR', { day: 'numeric', month: 'short' })} ${hhmm(m.ts)}</div>`).join('')
+    : '<span class="dt-v">—</span>';
+  const detailRow = (label, value) => `<div class="dt-row"><span class="dt-l">${label}</span><span class="dt-v">${value}</span></div>`;
+  const details = `
+    <details class="stat-details">
+      <summary>Détails</summary>
+      ${detailRow('Intervalle moyen entre repas', dur(pe.avgFeedGapMin))}
+      ${detailRow('Plus long intervalle entre 2 repas', dur(pe.longestFeedGapMin))}
+      ${detailRow('Durée de tétée moyenne', pe.avgTeteeDurationMin == null ? '—' : pe.avgTeteeDurationMin + ' min')}
+      ${detailRow('Équilibre des côtés', pe.sideLeftPct == null ? '—' : `G ${pe.sideLeftPct} % · D ${pe.sideRightPct} %`)}
+      ${detailRow('Intervalle moyen entre 2 cacas', durLong(pe.avgPoopGapMin))}
+      ${detailRow('Température max', pe.tempMax == null ? '—' : `${fmtTemp(pe.tempMax)} °C${pe.tempAlert ? ' ⚠️' : ''}`)}
+      ${detailRow('Bains', pe.bains)}
+      <div class="dt-row dt-col"><span class="dt-l">Médicaments</span><div class="dt-meds">${medsHtml}</div></div>
+    </details>`;
+
+  // Qualité des données
+  const byId = {}; Store.all().forEach(e => { byId[e.id] = e; });
+  const qTypes = [
+    ['couchesSansType', '🧷', 'Couche sans contenu'],
+    ['teteesSansCote', '🤱', 'Tétée sans côté'],
+    ['dodosNonFermes', '😴', 'Dodo non terminé'],
+    ['dureesNegatives', '⏱️', 'Durée négative (réveil avant coucher)'],
+    ['tempHorsPlage', '🌡️', 'Température hors plage'],
+  ];
+  let qRows = '', qCount = 0;
+  qTypes.forEach(([key, emoji, label]) => {
+    (s.quality[key] || []).forEach(id => {
+      const e = byId[id]; if (!e) return;
+      const when = new Date(e.ts).toLocaleDateString('fr-FR', { day: 'numeric', month: 'short' }) + ' ' + hhmm(e.ts);
+      qCount++;
+      qRows += `<button class="q-row" data-id="${id}"><span class="q-emoji">${emoji}</span><span class="q-lab">${label}</span><span class="q-when">${when} ›</span></button>`;
+    });
+  });
+  const quality = qRows
+    ? `<details class="quality-box"><summary>⚠️ Qualité des données<span class="qb-count">${qCount}</span></summary><div class="qb-sub">Corrige une saisie incomplète en la touchant</div>${qRows}</details>`
+    : '';
+
+  const exportBox = `
+    <div class="export-box">
+      <div class="eb-title">Export</div>
+      <div class="eb-sub">Pour analyse / IA — données exhaustives</div>
+      <div class="eb-btns">
+        <button class="eb-btn" id="expJson">JSON brut</button>
+        <button class="eb-btn" id="expEvents">CSV événements</button>
+        <button class="eb-btn" id="expDaily">CSV /jour</button>
+      </div>
+    </div>`;
+
+  host.innerHTML = `
+    <header class="view-header"><h1>📊 Statistiques</h1></header>
+    <div class="period-sel">${periodBtns}</div>
+    ${banner}
+    <div class="stat-grid">${cards}</div>
+    ${details}
+    ${quality}
+    ${exportBox}`;
+
+  // Câblage
+  host.querySelectorAll('.per-btn').forEach(b => b.onclick = () => { statsPeriod = Number(b.dataset.p); renderStats(); });
+  host.querySelectorAll('.q-row').forEach(b => b.onclick = () => { const e = byId[b.dataset.id]; if (e) openEditSheet(e); });
+  const j = host.querySelector('#expJson'); if (j) j.onclick = exportJSON;
+  const ce = host.querySelector('#expEvents'); if (ce) ce.onclick = exportEventsCSV;
+  const cd = host.querySelector('#expDaily'); if (cd) cd.onclick = exportDailyCSV;
+}
+
+/* ---------- Export (exhaustivité pour analyse / IA) ---------- */
+function downloadText(filename, text, mime) {
+  const blob = new Blob([text], { type: (mime || 'text/plain') + ';charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = filename;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 2000);
+}
+function stamp() { return new Date().toISOString().slice(0, 16).replace(/[:T]/g, '-'); }
+function csvCell(v) {
+  if (v == null) return '';
+  const s = String(v);
+  return /[",\n\r]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+}
+function csvRows(rows) { return rows.map(r => r.map(csvCell).join(',')).join('\r\n'); }
+function localYMD(d) { const x = new Date(d); return `${x.getFullYear()}-${String(x.getMonth() + 1).padStart(2, '0')}-${String(x.getDate()).padStart(2, '0')}`; }
+function localHM(d) { return new Date(d).toTimeString().slice(0, 5); }
+
+function exportJSON() {
+  const events = Store.all(); // non supprimés, triés par date
+  const payload = {
+    meta: {
+      exported_at: new Date().toISOString(),
+      timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+      tz_offset_min: -new Date().getTimezoneOffset(),
+      app_version: 'v23',
+      schema_version: 1,
+      includes_deleted: false,
+      count: events.length,
+    },
+    events,
+  };
+  downloadText(`suivi-bebe-${stamp()}.json`, JSON.stringify(payload, null, 2), 'application/json');
+  toast('📄 Export JSON');
+}
+function exportEventsCSV() {
+  const tz = -new Date().getTimezoneOffset();
+  const header = ['id', 'action', 'ts_utc', 'date_local', 'time_local', 'tz_offset_min', 'side', 'duration_min',
+    'volume_ml', 'couche_type', 'is_pee', 'is_poop', 'temp_c', 'med_name', 'sleep_end_utc', 'sleep_duration_min', 'deleted'];
+  const rows = [header];
+  Store.all().slice().sort((a, b) => new Date(a.ts) - new Date(b.ts)).forEach(e => {
+    const d = e.data || {}, t = e.action;
+    const isPee = t === 'couche' ? (d.type === 'pipi' || d.type === 'mixte' ? 1 : 0) : '';
+    const isPoop = t === 'couche' ? (d.type === 'caca' || d.type === 'mixte' ? 1 : 0) : '';
+    const sleepDur = t === 'sommeil' && d.end ? durMin(e.ts, d.end) : '';
+    rows.push([
+      e.id, t, new Date(e.ts).toISOString(), localYMD(e.ts), localHM(e.ts), tz,
+      t === 'tetee' ? (d.side || '') : '',
+      t === 'tetee' && d.duration != null ? d.duration : '',
+      t === 'biberon' && d.ml != null ? d.ml : '',
+      t === 'couche' ? (d.type || '') : '', isPee, isPoop,
+      t === 'temperature' && d.temp != null ? d.temp : '',
+      t === 'medicament' ? (d.name || '') : '',
+      t === 'sommeil' && d.end ? new Date(d.end).toISOString() : '',
+      sleepDur, e.deleted ? 1 : 0,
+    ]);
+  });
+  downloadText(`suivi-bebe-evenements-${stamp()}.csv`, csvRows(rows), 'text/csv');
+  toast('📄 CSV événements');
+}
+function exportDailyCSV() {
+  const all = Store.all();
+  if (!all.length) { toast('Aucune donnée'); return; }
+  const earliest = all.reduce((m, e) => Math.min(m, new Date(e.ts).getTime()), Infinity);
+  const n = Math.floor((startOfDay(new Date()).getTime() - startOfDay(new Date(earliest)).getTime()) / 86400000) + 1;
+  const s = Stats.compute(all, { periodDays: Math.max(1, n), domainStart: DATA_START, firstCompleteDay: FIRST_COMPLETE_DAY });
+  const header = ['date', 'partiel', 'repas', 'tetees', 'biberons', 'volume_ml', 'temps_sein_min', 'part_biberon_pct',
+    'sommeil_min', 'plus_long_sommeil_min', 'nb_dodos', 'pipis', 'cacas', 'couches', 'temp_max_c'];
+  const rows = [header];
+  s.days.forEach(d => {
+    rows.push([
+      localYMD(d.date), d.complete ? 0 : 1,
+      d.dataRepas ? d.repas : '', d.dataRepas ? d.tetees : '', d.dataRepas ? d.biberons : '',
+      d.dataRepas ? d.volumeMl : '', d.dataRepas ? d.teteeDurMin : '', (d.dataRepas && d.repas > 0) ? Math.round(d.bottleShare * 100) : '',
+      d.dataSommeil ? d.sleepMin : '', d.dataSommeil ? d.longestSleepMin : '', d.dataSommeil ? d.naps : '',
+      d.dataCouche ? d.pipis : '', d.dataCouche ? d.cacas : '', d.dataCouche ? d.couches : '',
+      d.tempMax == null ? '' : d.tempMax,
+    ]);
+  });
+  downloadText(`suivi-bebe-quotidien-${stamp()}.csv`, csvRows(rows), 'text/csv');
+  toast('📄 CSV quotidien');
 }
 
 /* ============================================================
