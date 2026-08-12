@@ -209,6 +209,7 @@ body :is(input, textarea) { -webkit-user-select: text; user-select: text; }
 .timeline-title { font-size: 16px; margin: 0 0 10px; color: var(--text); }
 .timeline-title span { color: var(--text-soft); font-weight: 400; font-size: 14px; }
 .timeline { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.timeline[hidden] { display: none; }
 .timeline-empty { color: var(--text-soft); font-size: 14px; padding: 18px 4px; text-align: center; }
 .event {
   display: flex;
@@ -285,7 +286,7 @@ body :is(input, textarea) { -webkit-user-select: text; user-select: text; }
   position: absolute; top: 50%; transform: translateY(-50%); height: 20px;
   background: color-mix(in srgb, var(--c) 26%, #fff); border: 1.5px solid var(--c);
   border-radius: 6px; cursor: pointer; z-index: 1;
-  display: flex; align-items: center; justify-content: center; overflow: hidden;
+  display: flex; align-items: center; justify-content: center; overflow: visible;
   min-width: 6px;
 }
 .tl-bar .lbl { font-size: 10px; font-weight: 700; color: color-mix(in srgb, var(--c) 70%, #333); white-space: nowrap; padding: 0 4px; }

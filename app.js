@@ -751,9 +751,12 @@ function renderJournalBand(band, events, { isToday, nowMin }) {
         const bar = document.createElement('div');
         bar.className = 'tl-bar' + (ongoing ? ' ongoing' : '');
         bar.style.cssText = `--c:${a.color}; left:${p(s)}%; width:${(w / len) * 100}%`;
-        // libellé (durée totale) seulement si l'épisode tient dans la bande et qu'il y a la place
-        const fits = !ongoing && start >= startMin && end <= endMin;
-        if (fits && w >= 75) bar.innerHTML = `<span class="lbl">${fmtDuration(end - start)}</span>`;
+        // libellé (durée totale) affiché dès que le sommeil dépasse 1h ;
+        // si l'épisode chevauche les deux bandes, il s'affiche dans celle qui en contient la plus grande part
+        const totalMin = end - start;
+        if (totalMin > 60 && w * 2 >= totalMin) {
+          bar.innerHTML = `<span class="lbl">${fmtDuration(totalMin)}</span>`;
+        }
         bar.addEventListener('click', (evt) => { evt.stopPropagation(); showJournalPop(ev, bar); });
         track.appendChild(bar);
       } else {
