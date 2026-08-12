@@ -25,6 +25,13 @@
 
   --safe-top: env(safe-area-inset-top, 0px);
   --safe-bottom: env(safe-area-inset-bottom, 0px);
+
+  /* Frise du journal */
+  --tl-lane-h: 42px;
+  --tl-pin: 24px;
+  --tl-night: rgba(128, 180, 215, 0.10);
+  --tl-grid: #eef0f3;
+  --tl-now: #2a4a6b;
 }
 
 * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
@@ -224,6 +231,78 @@ body :is(input, textarea) { -webkit-user-select: text; user-select: text; }
 .event .ev-name { font-weight: 600; font-size: 15px; }
 .event .ev-detail { font-size: 13px; color: var(--text-soft); }
 .event .ev-time { font-size: 15px; font-weight: 700; color: var(--text-soft); font-variant-numeric: tabular-nums; }
+
+/* ---------- Journal : en-tête + bascule Liste/Frise ---------- */
+.journal-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 8px; }
+.journal-head .section-label { margin: 0 0 0 2px; }
+.seg { display: inline-flex; background: var(--surface-2); border-radius: 999px; padding: 3px; gap: 2px; flex: 0 0 auto; }
+.seg button {
+  border: 0; background: transparent; color: var(--text-soft);
+  font: inherit; font-size: 12px; font-weight: 600; padding: 5px 13px;
+  border-radius: 999px; cursor: pointer; transition: background .15s, color .15s;
+}
+.seg button.active { background: var(--surface); color: var(--text); box-shadow: 0 1px 4px rgba(0, 0, 0, .10); }
+
+/* ---------- Frise (2 bandes de 12 h) ---------- */
+.tl { user-select: none; }
+.tl-band + .tl-band { margin-top: 16px; }
+
+.tl-axis { position: relative; height: 18px; }
+.tl-tick { position: absolute; top: 0; transform: translateX(-50%); font-size: 10.5px; color: var(--text-soft); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.tl-tick.start { transform: translateX(0); }
+.tl-tick.end { transform: translateX(-100%); }
+.tl-glyph { position: absolute; top: -1px; transform: translateX(-50%); font-size: 12px; opacity: .55; }
+
+.tl-body { position: relative; }
+.tl-overlay { position: absolute; inset: 0; pointer-events: none; }
+.tl-night { position: absolute; top: 0; bottom: 0; background: var(--tl-night); }
+.tl-gridline { position: absolute; top: 0; bottom: 0; width: 1px; background: var(--tl-grid); transform: translateX(-.5px); }
+.tl-now { position: absolute; top: -2px; bottom: 0; width: 2px; background: var(--tl-now); border-radius: 2px; }
+.tl-now::before {
+  content: attr(data-label); position: absolute; top: -16px; left: 50%; transform: translateX(-50%);
+  font-size: 9.5px; font-weight: 700; color: #fff; background: var(--tl-now);
+  padding: 1px 5px; border-radius: 6px; white-space: nowrap; font-variant-numeric: tabular-nums;
+}
+.tl-future { position: absolute; top: 0; bottom: 0; right: 0; background: rgba(245, 246, 248, 0.55); }
+
+.tl-lane { position: relative; height: var(--tl-lane-h); }
+.tl-lane.alt { background: rgba(0, 0, 0, 0.018); border-radius: 10px; }
+.tl-track { position: absolute; inset: 0; }
+
+/* pastille (événement ponctuel) */
+.tl-pin {
+  position: absolute; top: 50%; transform: translate(-50%, -50%);
+  width: var(--tl-pin); height: var(--tl-pin); border-radius: 50%;
+  display: grid; place-items: center; font-size: 12px;
+  background: var(--surface); border: 2px solid var(--c); box-shadow: 0 1px 3px rgba(0, 0, 0, .12);
+  cursor: pointer; z-index: 2;
+}
+/* zone tactile élargie invisible (cible ≥ 40 px) */
+.tl-pin::after { content: ""; position: absolute; inset: -8px; border-radius: 50%; }
+
+/* barre de durée (sommeil) */
+.tl-bar {
+  position: absolute; top: 50%; transform: translateY(-50%); height: 20px;
+  background: color-mix(in srgb, var(--c) 26%, #fff); border: 1.5px solid var(--c);
+  border-radius: 6px; cursor: pointer; z-index: 1;
+  display: flex; align-items: center; justify-content: center; overflow: hidden;
+  min-width: 6px;
+}
+.tl-bar .lbl { font-size: 10px; font-weight: 700; color: color-mix(in srgb, var(--c) 70%, #333); white-space: nowrap; padding: 0 4px; }
+.tl-bar.ongoing { border-style: dashed; background: repeating-linear-gradient(90deg, color-mix(in srgb, var(--c) 22%, #fff) 0 6px, color-mix(in srgb, var(--c) 10%, #fff) 6px 12px); }
+.tl-pin.selected, .tl-bar.selected { box-shadow: 0 0 0 3px color-mix(in srgb, var(--c) 35%, #fff); }
+
+/* Popover d'info (lecture seule) ancré à la marque */
+.pop { position: fixed; z-index: 60; display: none; background: var(--surface); border: 1px solid var(--line); box-shadow: var(--shadow); border-radius: 14px; padding: 9px 12px; max-width: 240px; }
+.pop-row { display: flex; align-items: center; gap: 9px; }
+.pop-ic { width: 30px; height: 30px; border-radius: 9px; display: grid; place-items: center; font-size: 16px; border: 1.5px solid; flex: 0 0 auto; }
+.pop-txt { display: flex; flex-direction: column; line-height: 1.2; }
+.pop-name { font-weight: 700; font-size: 14px; }
+.pop-time { font-size: 12px; color: var(--text-soft); font-variant-numeric: tabular-nums; margin-top: 1px; }
+.pop-detail { margin-top: 8px; font-size: 13px; color: var(--text); background: var(--surface-2); border-radius: 8px; padding: 6px 9px; }
+.pop-arrow { position: absolute; width: 11px; height: 11px; background: var(--surface); transform: rotate(45deg); }
+.pop.above .pop-arrow { bottom: -6px; border-right: 1px solid var(--line); border-bottom: 1px solid var(--line); }
+.pop.below .pop-arrow { top: -6px; border-left: 1px solid var(--line); border-top: 1px solid var(--line); }
 
 /* ---------- Bottom sheet ---------- */
 .sheet-backdrop {

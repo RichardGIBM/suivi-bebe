@@ -14,7 +14,7 @@
   <meta name="apple-mobile-web-app-status-bar-style" content="default" />
   <meta name="apple-mobile-web-app-title" content="Suivi Bébé" />
 
-  <link rel="stylesheet" href="styles.css?v=23" />
+  <link rel="stylesheet" href="styles.css?v=24" />
 </head>
 <body>
   <!-- Indicateur "tirer pour rafraîchir" -->
@@ -57,8 +57,15 @@
 
       <!-- Journal du jour -->
       <section class="timeline-wrap">
-        <h2 class="section-label">Journal <span id="timelineCount"></span></h2>
+        <div class="journal-head">
+          <h2 class="section-label">Journal <span id="timelineCount"></span></h2>
+          <div class="seg" id="journalSeg" role="tablist" aria-label="Vue du journal">
+            <button type="button" data-view="list" class="active">Liste</button>
+            <button type="button" data-view="timeline">Frise</button>
+          </div>
+        </div>
         <ul class="timeline" id="timeline"></ul>
+        <div class="tl-host" id="timelineFrise" hidden></div>
       </section>
     </div>
 
@@ -109,10 +116,13 @@
   <!-- Toast -->
   <div class="toast" id="toast" hidden></div>
 
+  <!-- Popover d'info de la frise (lecture seule, ancré à la marque touchée) -->
+  <div class="pop" id="journalPop"><div class="pop-arrow"></div><div class="pop-body"></div></div>
+
   <script src="vendor/supabase.js"></script>
   <script src="config.js?v=15"></script>
-  <script src="stats.js?v=23"></script>
-  <script src="app.js?v=23"></script>
+  <script src="stats.js?v=24"></script>
+  <script src="app.js?v=24"></script>
   <script>
     // Enregistrement du service worker (PWA hors-ligne)
     if ('serviceWorker' in navigator) {

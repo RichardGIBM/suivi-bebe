@@ -303,6 +303,16 @@ const ACTION_MAP = Object.fromEntries(ACTIONS.map(a => [a.id, a]));
 const TILE_ACTIONS = ACTIONS.filter(a => a.place === 'tile');
 const CHECKLIST_ACTIONS = ACTIONS.filter(a => a.place === 'checklist');
 
+/* Frise du journal — pistes par domaine (l'icône de chaque marque suffit,
+   pas de libellé de piste à gauche) et découpe du jour en 2 bandes de 12 h.
+   Les soins (bain/température/médicament) restent visibles en vue Liste. */
+const JOURNAL_LANES = [
+  { key: 'repas',   actions: ['tetee', 'biberon'] },
+  { key: 'sommeil', actions: ['sommeil'] },
+  { key: 'couche',  actions: ['couche'] },
+];
+const JOURNAL_BANDS = [{ startH: 0, endH: 12 }, { startH: 12, endH: 24 }];
+
 /* Vues (barre d'onglets) — extensible : ajouter 'calendrier' plus tard */
 const VIEWS = [
   { id: 'suivi',  label: 'Suivi',  emoji: '📋' },
@@ -351,12 +361,15 @@ function describe(ev) {
 let selectedDate = startOfDay(new Date());
 let currentView = 'suivi';
 let statsPeriod = 7;              // fenêtre de la vue Stats (7 / 14 / 30 jours)
+let journalView = localStorage.getItem('suivi-bebe-journal-view') === 'timeline' ? 'timeline' : 'list';
 
 /* ---------- Helpers date/heure ---------- */
 function startOfDay(d) { const x = new Date(d); x.setHours(0, 0, 0, 0); return x; }
 function ymd(d) { return `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`; }
 function isSameDay(a, b) { return ymd(a) === ymd(b); }
 function hhmm(d) { return new Date(d).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit', hour12: false }); }
+function pad2(n) { return String(n).padStart(2, '0'); }
+function minOf(ts) { const d = new Date(ts); return d.getHours() * 60 + d.getMinutes(); } // minutes depuis minuit
 function hhmmInput(d) { return new Date(d).toTimeString().slice(0, 5); }
 function capitalize(s) { return s.charAt(0).toUpperCase() + s.slice(1); }
 function fmtTemp(t) { return Number(t).toFixed(1).replace('.', ','); }
@@ -611,13 +624,29 @@ function renderLearnedToday() {
   });
 }
 
+/* Journal : dispatcher Liste / Frise (même journal d'événements, deux vues). */
 function renderTimeline() {
-  const list = document.getElementById('timeline');
+  const listEl = document.getElementById('timeline');
+  const friseEl = document.getElementById('timelineFrise');
   const count = document.getElementById('timelineCount');
   // Le journal exclut les "appris" (qui ont leur propre section + onglet)
   const events = Store.byDay(selectedDate).filter(e => e.action !== 'appris');
-  list.innerHTML = '';
   count.textContent = events.length ? `· ${events.length}` : '';
+  document.querySelectorAll('#journalSeg button')
+    .forEach(b => b.classList.toggle('active', b.dataset.view === journalView));
+  hideJournalPop();
+  if (journalView === 'timeline') {
+    listEl.hidden = true; friseEl.hidden = false;
+    renderJournalTimeline(friseEl, events);
+  } else {
+    friseEl.hidden = true; listEl.hidden = false;
+    renderJournalList(listEl, events);
+  }
+}
+
+/* Vue LISTE (comportement historique : tap → édition complète). */
+function renderJournalList(list, events) {
+  list.innerHTML = '';
   if (!events.length) {
     const li = document.createElement('li');
     li.className = 'timeline-empty';
@@ -640,6 +669,177 @@ function renderTimeline() {
     li.addEventListener('click', () => openEditSheet(ev));
     list.appendChild(li);
   });
+}
+
+/* Vue FRISE — axe horizontal 24 h en 2 bandes de 12 h, pistes par domaine.
+   Lecture seule : tap sur une marque → popover d'info ancré (l'édition reste
+   dans la vue Liste). */
+function renderJournalTimeline(host, events) {
+  host.innerHTML = '';
+  if (!events.length) {
+    host.innerHTML = '<div class="timeline-empty">Aucune action enregistrée ce jour.</div>';
+    return;
+  }
+  const isToday = isSameDay(selectedDate, startOfDay(new Date()));
+  const now = new Date();
+  const nowMin = now.getHours() * 60 + now.getMinutes();
+  const tl = document.createElement('div');
+  tl.className = 'tl';
+  JOURNAL_BANDS.forEach(band => tl.appendChild(renderJournalBand(band, events, { isToday, nowMin })));
+  host.appendChild(tl);
+}
+
+/* Une bande = fenêtre de 12 h (0→12 ou 12→24). Minutes comptées depuis
+   minuit du jour affiché (mn) → le sommeil à cheval sur minuit est borné
+   proprement à 0/24, cohérent avec la découpe des stats. */
+function renderJournalBand(band, events, { isToday, nowMin }) {
+  const startMin = band.startH * 60, endMin = band.endH * 60, len = endMin - startMin;
+  const p = (m) => ((m - startMin) / len) * 100;
+  const dayStart = startOfDay(selectedDate).getTime();
+  const mn = (ts) => Math.round((new Date(ts).getTime() - dayStart) / 60000);
+
+  const wrap = document.createElement('div');
+  wrap.className = 'tl-band';
+
+  // Axe : graduations toutes les 2 h (suffixe "h") ; ☀️ discret l'après-midi
+  const axis = document.createElement('div');
+  axis.className = 'tl-axis';
+  let ax = '';
+  for (let h = band.startH; h <= band.endH; h += 2) {
+    const cls = h === band.startH ? 'start' : (h === band.endH ? 'end' : '');
+    ax += `<div class="tl-tick ${cls}" style="left:${p(h * 60)}%">${h}h</div>`;
+  }
+  if (band.startH !== 0) ax += `<div class="tl-glyph" style="left:${p(13 * 60)}%">☀️</div>`;
+  axis.innerHTML = ax;
+  wrap.appendChild(axis);
+
+  // Corps : overlay (nuit 20h→6h + grille + maintenant/futur) + pistes
+  const body = document.createElement('div');
+  body.className = 'tl-body';
+
+  const overlay = document.createElement('div');
+  overlay.className = 'tl-overlay';
+  let ov = band.startH === 0
+    ? `<div class="tl-night" style="left:0; width:${p(6 * 60)}%"></div>`     // 0→6 h
+    : `<div class="tl-night" style="left:${p(20 * 60)}%; right:0"></div>`;   // 20→24 h
+  for (let h = band.startH + 2; h < band.endH; h += 2) ov += `<div class="tl-gridline" style="left:${p(h * 60)}%"></div>`;
+  if (isToday && nowMin > startMin && nowMin < endMin) {
+    ov += `<div class="tl-future" style="left:${p(nowMin)}%"></div>`;
+    ov += `<div class="tl-now" data-label="${pad2(Math.floor(nowMin / 60))}:${pad2(nowMin % 60)}" style="left:${p(nowMin)}%"></div>`;
+  } else if (isToday && nowMin <= startMin) {
+    ov += `<div class="tl-future" style="left:0; right:0"></div>`;          // bande entièrement future
+  }
+  overlay.innerHTML = ov;
+  body.appendChild(overlay);
+
+  JOURNAL_LANES.forEach((lane, i) => {
+    const row = document.createElement('div');
+    row.className = 'tl-lane' + (i % 2 ? ' alt' : '');
+    const track = document.createElement('div');
+    track.className = 'tl-track';
+
+    events.filter(e => lane.actions.includes(e.action)).forEach(ev => {
+      const a = ACTION_MAP[ev.action];
+      if (!a) return;
+      const start = mn(ev.ts);
+      if (ev.action === 'sommeil') {
+        const ongoing = !(ev.data && ev.data.end);
+        const end = ongoing ? (isToday ? nowMin : start) : mn(ev.data.end);
+        const s = Math.max(start, startMin), e = Math.min(end, endMin);
+        if (e <= s) return;                     // épisode hors de cette bande
+        const w = e - s;
+        const bar = document.createElement('div');
+        bar.className = 'tl-bar' + (ongoing ? ' ongoing' : '');
+        bar.style.cssText = `--c:${a.color}; left:${p(s)}%; width:${(w / len) * 100}%`;
+        // libellé (durée totale) seulement si l'épisode tient dans la bande et qu'il y a la place
+        const fits = !ongoing && start >= startMin && end <= endMin;
+        if (fits && w >= 75) bar.innerHTML = `<span class="lbl">${fmtDuration(end - start)}</span>`;
+        bar.addEventListener('click', (evt) => { evt.stopPropagation(); showJournalPop(ev, bar); });
+        track.appendChild(bar);
+      } else {
+        if (start < startMin || start >= endMin) return;
+        const pin = document.createElement('div');
+        pin.className = 'tl-pin';
+        pin.style.cssText = `--c:${a.color}; left:${p(start)}%`;
+        pin.innerHTML = `<span class="em">${a.emoji}</span>`;
+        pin.addEventListener('click', (evt) => { evt.stopPropagation(); showJournalPop(ev, pin); });
+        track.appendChild(pin);
+      }
+    });
+
+    row.appendChild(track);
+    body.appendChild(row);
+  });
+
+  wrap.appendChild(body);
+  return wrap;
+}
+
+/* ---------- Popover d'info de la frise (lecture seule) ---------- */
+let journalPopAnchor = null;
+function popTime(ev) {
+  if (ev.action === 'sommeil') {
+    return (ev.data && ev.data.end) ? `${hhmm(ev.ts)} → ${hhmm(ev.data.end)}` : `depuis ${hhmm(ev.ts)}`;
+  }
+  return hhmm(ev.ts);
+}
+function popDetail(ev) {
+  const d = ev.data || {};
+  switch (ev.action) {
+    case 'tetee':       return d.side ? `Côté ${d.side}` + (d.duration ? ` · ${d.duration} min` : '') : '';
+    case 'biberon':     return d.ml != null ? `${d.ml} ml` : '';
+    case 'couche':      return d.type ? capitalize(d.type) : '';
+    case 'temperature': return d.temp != null ? `${fmtTemp(d.temp)} °C` : '';
+    case 'medicament':  return d.name || '';
+    case 'sommeil':     return d.end ? `Durée ${fmtDuration(durMin(ev.ts, d.end))}` : 'En cours…';
+    default:            return '';
+  }
+}
+function hideJournalPop() {
+  const pop = document.getElementById('journalPop');
+  if (!pop) return;
+  pop.style.display = 'none';
+  if (journalPopAnchor) { journalPopAnchor.classList.remove('selected'); journalPopAnchor = null; }
+}
+function showJournalPop(ev, anchor) {
+  const pop = document.getElementById('journalPop');
+  const a = ACTION_MAP[ev.action] || { name: ev.action, emoji: '•', color: 'var(--line)' };
+  const detail = popDetail(ev);
+  pop.querySelector('.pop-body').innerHTML = `
+    <div class="pop-row">
+      <div class="pop-ic" style="background: color-mix(in srgb, ${a.color} 16%, #fff); border-color: ${a.color}">${a.emoji}</div>
+      <div class="pop-txt">
+        <div class="pop-name">${a.name}</div>
+        <div class="pop-time">${popTime(ev)}</div>
+      </div>
+    </div>
+    ${detail ? `<div class="pop-detail">${escapeHtml(detail)}</div>` : ''}`;
+
+  // rendre visible pour mesurer, puis positionner (fixed, ancré à la marque)
+  pop.style.display = 'block';
+  pop.style.left = '0px'; pop.style.top = '0px';
+  const r = anchor.getBoundingClientRect();
+  const pw = pop.offsetWidth, ph = pop.offsetHeight;
+  const gap = 10, margin = 8;
+  const cx = r.left + r.width / 2;
+
+  const above = r.top - ph - gap >= margin;     // au-dessus par défaut, bascule en dessous
+  const top = above ? r.top - ph - gap : r.bottom + gap;
+  pop.classList.toggle('above', above);
+  pop.classList.toggle('below', !above);
+
+  let left = cx - pw / 2;                        // centré sur la marque, borné à l'écran
+  left = Math.max(margin, Math.min(left, window.innerWidth - pw - margin));
+  pop.style.left = `${Math.round(left)}px`;
+  pop.style.top = `${Math.round(top)}px`;
+
+  const arrow = pop.querySelector('.pop-arrow');  // flèche pointe vers le centre de la marque
+  const axp = Math.max(10, Math.min(cx - left, pw - 10));
+  arrow.style.left = `${Math.round(axp - 5.5)}px`;
+  arrow.style.right = 'auto';
+
+  if (journalPopAnchor) journalPopAnchor.classList.remove('selected');
+  journalPopAnchor = anchor; anchor.classList.add('selected');
 }
 
 /* ---------- Vue APPRIS ---------- */
@@ -1472,6 +1672,17 @@ document.getElementById('nextDay').onclick = () => {
 };
 document.getElementById('learnedAdd').onclick = addLearned;
 document.getElementById('learnedText').addEventListener('keydown', e => { if (e.key === 'Enter') addLearned(); });
+
+/* ---------- Journal : bascule Liste / Frise ---------- */
+document.getElementById('journalSeg').addEventListener('click', (e) => {
+  const b = e.target.closest('button'); if (!b) return;
+  journalView = b.dataset.view === 'timeline' ? 'timeline' : 'list';
+  localStorage.setItem('suivi-bebe-journal-view', journalView);
+  renderTimeline();
+});
+// Le popover de la frise se ferme au clic ailleurs et au scroll (position fixe)
+document.addEventListener('click', hideJournalPop);
+window.addEventListener('scroll', () => { if (journalPopAnchor) hideJournalPop(); }, { passive: true });
 
 /* ---------- Init ---------- */
 // Synchro entre onglets du même appareil : un autre onglet a modifié le stockage
