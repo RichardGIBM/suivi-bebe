@@ -322,11 +322,15 @@ const JOURNAL_LANES = [
 ];
 const JOURNAL_BANDS = [{ startH: 0, endH: 12 }, { startH: 12, endH: 24 }];
 
-/* Vues (barre d'onglets) — extensible : ajouter 'calendrier' plus tard */
+/* Vues (barre d'onglets) — extensible : ajouter 'calendrier' plus tard.
+   `when` (optionnel) : onglet affiché seulement si la condition est vraie. */
 const VIEWS = [
   { id: 'suivi',  label: 'Suivi',  emoji: '📋' },
   { id: 'appris', label: 'Appris', emoji: '✨' },
   { id: 'stats',  label: 'Stats',  emoji: '📊' },
+  // Onglet expérimental : apparaît dès qu'UN des deux prédicteurs a un point de
+  // donnée (§4 de RECOS-prediction-sommeil-v5.md) — inutile d'exposer un labo vide.
+  { id: 'prediction', label: 'Prédiction', emoji: '🔮', when: () => Stats.hasSleepSamples(Store.all(), { domainStart: DATA_START }) },
 ];
 
 /* Fiabilité des données (précision) — les stats ne doivent pas afficher de
@@ -342,6 +346,8 @@ const DATA_START = {
 };
 // 1er jour CIVIL COMPLET (le 6 août est incomplet : née à 5h25) → 1re journée moyennable
 const FIRST_COMPLETE_DAY = new Date(2026, 7, 7);
+// Naissance (heure exacte) — sert l'âge affiché par l'onglet Prédiction
+const BIRTH = new Date(2026, 7, 6, 5, 25);
 
 /* Couleurs de dataviz VALIDÉES (charte : CVD-safe, contraste ≥ 3:1 sur fond clair).
    Distinctes des pastels d'UI (--c-*), qui échouent au validateur pour des marques
@@ -461,7 +467,7 @@ function wireTimeField(root, baseDate, onChange) {
 function renderTabbar() {
   const bar = document.getElementById('tabbar');
   bar.innerHTML = '';
-  VIEWS.forEach(v => {
+  VIEWS.filter(v => !v.when || v.when()).forEach(v => {
     const b = document.createElement('button');
     b.className = 'tab' + (currentView === v.id ? ' active' : '');
     b.innerHTML = `<span class="tab-emoji">${v.emoji}</span><span>${v.label}</span>`;
@@ -482,6 +488,7 @@ function renderCurrent() {
   if (currentView === 'suivi') renderSuivi();
   else if (currentView === 'stats') renderStats();
   else if (currentView === 'appris') renderAppris();
+  else if (currentView === 'prediction') renderPrediction();
 }
 
 /* ---------- Vue SUIVI ---------- */
@@ -1326,6 +1333,832 @@ function renderStats() {
   const cd = host.querySelector('#expDaily'); if (cd) cd.onclick = exportDailyCSV;
 }
 
+/* ============================================================
+   Vue PRÉDICTION — RECOS-prediction-sommeil-v5.md §3.4 → §3.9
+   ------------------------------------------------------------
+   Mode laboratoire assumé : on affiche TOUT dès le 1er point de donnée, avec
+   deux informations toujours SÉPARÉES à côté de chaque chiffre —
+     · le RECUL      : 🌱/🧪/✅ + n (combien de mesures / de backtests) ;
+     · la PERFORMANCE : erreur médiane et P80 des backtests.
+   Ce qui n'apparaît jamais : un pourcentage de confiance, une plage obtenue en
+   additionnant deux intervalles sans le dire, un état vide alors qu'une donnée
+   existe, ou une notification (tout reste dans cet onglet).
+   Recalcul lourd au SEUL affichage de l'onglet (§3.7) ; le timer de 60 s ne
+   rafraîchit que la ligne relative à « maintenant ».
+   ============================================================ */
+const PRED_TIERS = [
+  { emoji: '🌱', text: 'peu de recul' },
+  { emoji: '🧪', text: 'recul intermédiaire' },
+  { emoji: '✅', text: 'recul important' },
+];
+// Badge de RECUL (jamais de confiance) — dérivé du même n que le chiffre affiché.
+function tierBadge(n, emerging = 20, solid = 40) {
+  const t = n >= solid ? PRED_TIERS[2] : (n >= emerging ? PRED_TIERS[1] : PRED_TIERS[0]);
+  return { emoji: t.emoji, text: `${t.text} (n=${n})` };
+}
+// Heure d'horloge + repère de jour quand l'estimation franchit minuit.
+function predClock(ms, refMs) {
+  const d = new Date(ms), t = hhmm(d);
+  const diff = Math.round((startOfDay(d).getTime() - startOfDay(new Date(refMs)).getTime()) / 86400000);
+  if (diff === 0) return t;
+  if (diff === 1) return `${t} (+1j)`;
+  if (diff === -1) return `${t} (hier)`;
+  return `${t} (${d.getDate()}/${d.getMonth() + 1})`;
+}
+const plural = (n, s = 's') => n > 1 ? s : '';
+// Écart signé : + = plus tard que prévu (même convention que les résidus de stats.js)
+function predSigned(min) {
+  const r = Math.round(min);
+  return `${r > 0 ? '+' : (r < 0 ? '−' : '±')}${Math.abs(r)} min`;
+}
+// Performance d'un backtest — toujours sur sa propre ligne, jamais fondue dans le badge.
+function predPerfLine(q, label) {
+  if (!q.n) return `Performance ${label} : aucun backtest encore (n=0).`;
+  return `Performance ${label} : erreur médiane ${Math.round(q.medAbsMin)} min · 80 % ≤ ${Math.round(q.p80AbsMin)} min · ${q.recentN} backtest${plural(q.recentN)} récent${plural(q.recentN)}.`;
+}
+
+/* Ligne d'état relative à MAINTENANT (seule partie rafraîchie chaque minute). */
+function predRelHTML(p) {
+  const since = p.sinceMs == null ? null : fmtDuration(Math.round((Date.now() - p.sinceMs) / 60000));
+  if (p.state === 'ASLEEP') {
+    const head = `💤 Endormi depuis ${hhmm(p.sinceMs)} · ${since}`;
+    if (p.wake && p.wake.hiMs != null && Date.now() > p.wake.hiMs) {
+      // Pas de « en retard » : ce n'est pas un rendez-vous manqué (§3.9).
+      return `${head} — au-delà de la plage habituelle observée.`;
+    }
+    return p.wake ? `${head} — réveil estimé vers ${predClock(p.wake.atMs, p.nowMs)}.` : `${head}.`;
+  }
+  if (p.state === 'AWAKE') {
+    const head = `☀️ Éveillé depuis ${hhmm(p.sinceMs)} · ${since}`;
+    if (!p.onset || p.onset.atMs == null) return `${head}.`;
+    const d = Math.round((p.onset.atMs - Date.now()) / 60000);
+    if (d > 0) return `${head} — endormissement estimé dans ${fmtDuration(d)}.`;
+    if (d === 0) return `${head} — endormissement estimé maintenant.`;
+    return `${head} — l'heure estimée est passée de ${fmtDuration(-d)} (une habitude observée, pas un rendez-vous).`;
+  }
+  return 'Aucun dodo enregistré pour l\'instant.';
+}
+let predLast = null;                        // dernière prédiction rendue (pour le tic de 60 s)
+function refreshPredictionRel() {
+  const el = document.getElementById('predRel');
+  if (el && predLast) el.innerHTML = predRelHTML(predLast);
+}
+
+/* Bloc 🌙 endormissement : dernier réveil + médiane des écarts d'éveil. */
+function predOnsetBlock(p) {
+  if (p.state === 'ASLEEP') {
+    return `<div class="est-empty">Bébé dort en ce moment : l'endormissement n'est plus une estimation, il est mesuré à <b>${hhmm(p.sinceMs)}</b>.</div>`;
+  }
+  if (!p.onset.n || p.onset.atMs == null) {
+    return `<div class="est-empty">Aucun écart d'éveil mesuré encore (n=0) — rien à estimer pour l'instant. Il faut deux dodos terminés à la suite pour en obtenir un.</div>`;
+  }
+  const t = tierBadge(p.onset.n), med = fmtDuration(Math.round(p.onset.medianMin));
+  const range = p.onset.loMs != null
+    ? `Le plus souvent entre <b>${predClock(p.onset.loMs, p.nowMs)}</b> et <b>${predClock(p.onset.hiMs, p.nowMs)}</b> (≈ ${med} d'éveil).`
+    : `≈ ${med} d'éveil — ${p.onset.n === 1 ? 'une seule mesure' : `${p.onset.n} mesures seulement`}, pas encore de plage possible (dès n=${Stats.WW_MIN_SAMPLES_FOR_RANGE}).`;
+  return `
+    <div class="est-hero">${predClock(p.onset.atMs, p.nowMs)} <small>endormissement</small> <span class="badge-chip">${t.emoji}</span></div>
+    <div class="est-range">${range}</div>
+    <div class="est-n">${t.emoji} ${t.text} · basé sur ${p.onset.n} écart${plural(p.onset.n)} d'éveil récent${plural(p.onset.n)} — expérimental, à prendre avec précaution.<br>${predPerfLine(p.quality1, 'du prédicteur d’endormissement')}</div>`;
+}
+
+/* Bloc 🌅 réveil : chaîné sur l'endormissement (éveillé) ou ancré sur
+   l'endormissement RÉEL (endormi). La plage n'additionne jamais deux
+   intervalles sans le dire (§3.4). */
+function predWakeBlock(p) {
+  if (!p.wake) {
+    if (p.state === 'AWAKE' && !p.onset.n && p.duration.n) {
+      return `<div class="est-empty">Il faut d'abord un écart d'éveil mesuré pour chaîner une heure de réveil. Les durées de sommeil, elles, sont déjà là (n=${p.duration.n}).</div>`;
+    }
+    return `<div class="est-empty">Aucune durée de sommeil mesurée encore (n=0) — rien à estimer pour l'instant.</div>`;
+  }
+  const w = p.wake, t = tierBadge(p.duration.n);
+  const med = `≈ ${fmtDuration(Math.round(p.duration.medianMin))} de sommeil`;
+  const wide = p.duration.wide
+    ? ` <b>⚠️ plage large</b> : à cet âge, la durée de sommeil mélange siestes courtes et nuits longues — prends ça comme un ordre de grandeur, pas une promesse.`
+    : '';
+  const bornes = `entre <b>${w.loMs == null ? '—' : predClock(w.loMs, p.nowMs)}</b> et <b>${w.hiMs == null ? '—' : predClock(w.hiMs, p.nowMs)}</b>`;
+  let range;
+  if (w.loMs == null && p.duration.p25Min == null) {
+    range = `${med} — ${p.duration.n === 1 ? 'une seule mesure' : `${p.duration.n} mesures seulement`}, pas encore de plage possible (dès n=${Stats.SD_MIN_SAMPLES_FOR_RANGE}).`;
+  } else if (w.loMs == null) {
+    // Les durées ont déjà leur plage, mais le réveil part de l'endormissement ESTIMÉ :
+    // sans plage d'endormissement ni aller-retour vérifié, impossible de l'encadrer honnêtement.
+    range = `${med} — pas encore de plage : le réveil part de l'endormissement estimé, et il manque des écarts d'éveil pour l'encadrer (n=${p.onset.n}, plage dès n=${Stats.WW_MIN_SAMPLES_FOR_RANGE}).`;
+  } else if (w.basis === 'roundtrip') {
+    const rt = tierBadge(p.roundtrip.n);
+    // La plage est corrigée du biais signé : elle peut donc se retrouver
+    // entièrement d'un côté du point brut. C'est voulu (§3.4) — mais il faut le dire,
+    // sinon un chiffre hors de sa propre plage passe pour un bug.
+    const biais = (w.atMs < w.loMs || w.atMs > w.hiMs)
+      ? ` L'heure ci-dessus est le point brut du chaînage ; la plage, elle, est corrigée du décalage constaté (les réveils réels tombent régulièrement plus ${w.atMs < w.loMs ? 'tard' : 'tôt'} que ce point) — c'est la plage qu'il faut regarder.`
+      : '';
+    range = `Le plus souvent ${bornes} (${med}). ${rt.emoji} plage calibrée sur ${p.roundtrip.n} réveil${plural(p.roundtrip.n)} déjà prévu${plural(p.roundtrip.n)} puis observé${plural(p.roundtrip.n)}.${biais}${wide}`;
+  } else if (w.basis === 'somme') {
+    range = `Environ ${bornes} (${med}) — <i>approximation grossière</i> : somme des deux plages, faute d'aller-retour déjà vérifié (n=0). Elle sera remplacée dès le premier réveil prévu puis observé.${wide}`;
+  } else {
+    range = `Le plus souvent ${bornes} d'après les durées récentes (${med}).${wide}`;
+  }
+  const foot = p.state === 'ASLEEP'
+    ? `${t.emoji} ${t.text} · calé sur l'endormissement RÉEL de ${hhmm(p.sinceMs)}.<br>${predPerfLine(p.quality2, 'du prédicteur de durée')}`
+    : `${t.emoji} ${t.text} · chaîné à partir de l'endormissement estimé — jamais une addition de deux plages pour le point central.<br>${predPerfLine(p.roundtrip, 'de la chaîne complète')}`;
+  return `
+    <div class="est-hero">${predClock(w.atMs, p.nowMs)} <small>réveil</small> <span class="badge-chip">${t.emoji}</span></div>
+    <div class="est-range">${range}</div>
+    <div class="est-n">${foot}</div>`;
+}
+
+/* Carte « Qualité du backtest » : le chiffre, son badge, ses barres d'erreur. */
+function predQualityCard(title, q, o = {}) {
+  if (!q.n) {
+    return `
+      <div class="stat-card${o.wide ? ' stat-card-wide' : ''}">
+        <div class="sc-head"><div class="sc-title">${title}</div></div>
+        <div class="est-hero">—</div>
+        <div class="est-range">Aucun backtest encore (n=0). ${o.why || ''}</div>
+      </div>`;
+  }
+  const t = tierBadge(q.n);
+  // Emplacements réservés d'avance (comblés par des null, ignorés au tracé) : sans ça,
+  // 2 backtests donnent 2 barres larges d'un demi-graphe. Les barres poussent
+  // vers la droite au fil des backtests.
+  const slots = o.wide ? 14 : 8;
+  const errs = q.absErrs.map(v => Math.round(v));
+  while (errs.length < slots) errs.push(null);
+  return `
+    <div class="stat-card${o.wide ? ' stat-card-wide' : ''}">
+      <div class="sc-head"><div class="sc-title">${title}</div></div>
+      <div class="est-hero">${Math.round(q.medAbsMin)} min <small>d'écart médian</small> <span class="badge-chip">${t.emoji}</span></div>
+      <div class="est-range">80 % des prédictions à ± ${Math.round(q.p80AbsMin)} min · ${q.recentN} backtest${plural(q.recentN)} récent${plural(q.recentN)} · ${t.text}.</div>
+      <div class="sc-chart">${statChartBars(errs, { color: CHART.biberon, W: o.wide ? 300 : 150, H: 74, ticks: 3, valfmt: v => String(v) })}</div>
+      ${o.note ? `<div class="sd-note">${o.note}</div>` : ''}
+    </div>`;
+}
+
+/* Tableau « Prédiction vs réalité » — les 8 derniers backtests, du + récent au + ancien. */
+function predTableCard(title, label, q) {
+  if (!q.rows.length) {
+    return `
+      <div class="stat-card stat-card-wide">
+        <div class="sc-head"><div class="sc-title">${title}</div></div>
+        <div class="pred-table-empty">Aucune prédiction backtestée encore (n=0).</div>
+      </div>`;
+  }
+  const rows = q.rows.slice(-8).reverse().map(r => {
+    const cls = Math.abs(r.errMin) <= 15 ? 'err-ok' : 'err-mid';
+    // Le jour affiché est celui de l'heure PRÉVUE ; le réel porte un repère
+    // de jour s'il tombe de l'autre côté de minuit (sinon 23:15 → 06:30 se lit à l'envers).
+    const jour = new Date(r.predMs).toLocaleDateString('fr-FR', { day: 'numeric', month: 'short' });
+    return `<tr><td>${jour} · ${hhmm(r.predMs)}</td><td>${predClock(r.realMs, r.predMs)}</td><td class="${cls}">${predSigned(r.errMin)}</td></tr>`;
+  }).join('');
+  return `
+    <div class="stat-card stat-card-wide">
+      <div class="sc-head"><div class="sc-title">${title}</div></div>
+      <table class="pred-table">
+        <thead><tr><th>${label} prévu</th><th>Réel</th><th>Écart</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+      <div class="est-n">Écart = réel − prévu (+ = plus tard que prévu). Chaque ligne n'utilise que les mesures connues AVANT elle.</div>
+    </div>`;
+}
+
+function renderPrediction() {
+  document.body.classList.remove('other-day');
+  const host = document.getElementById('view-prediction');
+  if (!host) return;
+
+  const p = Stats.sleepPrediction(Store.all(), { domainStart: DATA_START, birth: BIRTH });
+  predLast = p;
+  const cx = p.context, ex = cx.excluded;
+  const ctxRow = (l, v) => `<div class="ctx-row"><span class="cr-label">${l}</span><span class="cr-val">${v}</span></div>`;
+  const nVal = n => `n=${n} ${tierBadge(n).emoji}`;
+
+  const contexte = `
+    <div class="stat-card stat-card-wide">
+      <div class="sc-head"><div class="sc-title">Contexte</div></div>
+      <div class="ctx-list">
+        <div class="ctx-group">
+          <div class="ctx-group-title">Commun aux deux prédicteurs</div>
+          ${ctxRow('Âge du bébé', cx.ageDays == null ? '—' : `${cx.ageDays} j`)}
+          ${ctxRow('Jours de sommeil suivis', `${cx.trackedSleepDays} j`)}
+          ${ctxRow('Dodos retenus', cx.episodesN)}
+          ${ex.aberrants ? ctxRow('Dodos improbables écartés', ex.aberrants) : ''}
+          ${ex.chevauchants ? ctxRow('Doublons écartés', ex.chevauchants) : ''}
+          ${ex.eveilTropLong ? ctxRow('Éveils de plus de 12 h écartés', ex.eveilTropLong) : ''}
+        </div>
+        <div class="ctx-group">
+          <div class="ctx-group-title">Prédicteur 1 — endormissement</div>
+          ${ctxRow('Écarts d’éveil mesurés', nVal(p.onset.n))}
+          ${ctxRow('Backtests', nVal(p.quality1.n))}
+        </div>
+        <div class="ctx-group">
+          <div class="ctx-group-title">Prédicteur 2 — réveil</div>
+          ${ctxRow('Durées de sommeil mesurées', nVal(p.duration.n))}
+          ${ctxRow('Backtests', nVal(p.quality2.n))}
+        </div>
+        <div class="ctx-group">
+          <div class="ctx-group-title">Chaînage aller-retour</div>
+          ${ctxRow('Réveils prévus dès le réveil précédent', nVal(p.roundtrip.n))}
+        </div>
+      </div>
+    </div>`;
+
+  const estimation = `
+    <div class="stat-card stat-card-wide">
+      <div class="sc-head"><div class="sc-title">Estimation actuelle — plage de sommeil</div></div>
+      <div class="est-rel" id="predRel">${predRelHTML(p)}</div>
+      <div class="est-split">
+        <div class="est-block">
+          <div class="est-block-title">🌙 Endormissement estimé</div>
+          ${predOnsetBlock(p)}
+        </div>
+        <div class="est-block">
+          <div class="est-block-title">🌅 Réveil estimé</div>
+          ${predWakeBlock(p)}
+        </div>
+      </div>
+    </div>`;
+
+  const note = p.duration.n
+    ? `Rappel : la durée de sommeil est plus dispersée que l'écart d'éveil à cet âge (siestes et nuits mélangées) — un écart plus grand ici est attendu, pas forcément un bug.`
+    : '';
+  const cards = [
+    contexte,
+    estimation,
+    predQualityCard('Qualité du backtest — endormissement', p.quality1,
+      { why: `Il en faut ${Stats.BACKTEST_MIN_TRAIN_SAMPLES} écarts d'éveil avant le premier.` }),
+    predQualityCard('Qualité du backtest — réveil', p.quality2,
+      { note, why: `Il en faut ${Stats.SD_BACKTEST_MIN_TRAIN_SAMPLES} durées de sommeil avant le premier.` }),
+    predQualityCard('Qualité du backtest — aller-retour (réveil prévu dès le réveil précédent)', p.roundtrip,
+      { wide: true, why: 'C\'est lui qui calibrera la plage du réveil estimé.' }),
+    predTableCard('Prédiction vs réalité — endormissement', 'Endormissement', p.quality1),
+    predTableCard('Prédiction vs réalité — réveil', 'Réveil', p.quality2),
+  ].join('');
+
+  host.innerHTML = `
+    <header class="view-header">
+      <h1>🔮 Prédiction</h1>
+      <p class="view-sub">Backtesting en direct — mode laboratoire</p>
+    </header>
+    <div class="pred-banner">
+      <span class="pb-ic">⚠️</span>
+      <span class="pb-txt"><b>Onglet expérimental.</b> Ces chiffres sont recalculés en direct à partir de ce qui est déjà mesuré pour ce bébé. Avec peu de données, ils sont volontairement affichés quand même — regarde le badge et le <i>n</i> de chaque carte pour juger toi-même à quel point t'y fier.</span>
+    </div>
+    <div id="labSuggest"></div>
+    <div class="stat-grid">${cards}</div>
+    <div class="lab-sep">
+      <h2 class="section-label">🧪 Laboratoire Champion / Challengers</h2>
+      <p class="view-sub">Tout est calculé tôt, comparé en walk-forward et montré. Rien n'est promu automatiquement : <b>M0 reste le modèle affiché plus haut</b> tant qu'aucune décision humaine n'a été prise.</p>
+    </div>
+    <div class="stat-grid" id="labHost"></div>`;
+
+  // Le laboratoire est le seul calcul VRAIMENT lourd : une seule passe ici,
+  // les sélecteurs ne re-rendent ensuite que le HTML depuis `labLast`.
+  labLast = Stats.sleepLab(Store.all(), { domainStart: DATA_START, birth: BIRTH });
+  renderLab();
+}
+
+/* ============================================================
+   Laboratoire Champion / Challengers — §3.8, §3.10, §3.12, §3.13, §3.14
+   ------------------------------------------------------------
+   Philosophie tenue à la lettre : tout calculer tôt, tout comparer en
+   walk-forward, tout montrer, ne rien promouvoir automatiquement.
+   · Un écart entre deux modèles dit seulement qu'ils PENSENT différemment,
+     jamais lequel a raison : la table « Maintenant » est donc toujours
+     rattachée aux métriques de backtest juste en dessous.
+   · Gain apparié = |erreur M0| − |erreur Mx| sur EXACTEMENT les mêmes cas
+     (> 0 = le challenger est meilleur). Le taux de victoire est descriptif.
+   · Les checkpoints rejouent ce qu'on savait ce jour-là (filtre de préfixe
+     sur les cas, aucune ré-estimation avec des données postérieures).
+   · Aucun bouton n'active un modèle : `active`/`rejected` restent humains.
+   Rien n'est persisté (§3.11) — même les suggestions écartées ne survivent
+   pas au rechargement.
+   ============================================================ */
+const LAB_STATUS = {
+  collecting: { emoji: '🌱', label: 'collecte' },
+  shadow: { emoji: '👁️', label: 'shadow' },
+  exploration: { emoji: '🧪', label: 'exploration' },
+  confirming: { emoji: '🧊', label: 'confirmation' },
+  active: { emoji: '✅', label: 'actif' },
+  rejected: { emoji: '🚫', label: 'rejeté' },
+};
+const LAB_METRICS = [
+  { key: 'gain', label: 'gain vs M0' },
+  { key: 'med', label: 'erreur médiane' },
+  { key: 'p80', label: 'P80' },
+  { key: 'bias', label: 'biais signé' },
+];
+const LAB_CASES_PAGE = 20;                  // cas affichés par palier (le reste est explicitement annoncé)
+let labLast = null;                         // dernier laboratoire calculé (source de tous les re-rendus)
+const labDismissed = new Set();             // suggestions écartées — en mémoire seulement
+const labUI = { perfT: null, evoT: null, evoMetric: 'gain', cp: 'now', caseT: null, caseM: null, caseN: LAB_CASES_PAGE };
+
+const labMin = v => (v == null || !isFinite(v)) ? '—' : `${Math.round(v)} min`;
+const labModel = (lab, id) => lab.models.find(m => m.id === id) || { id, label: id, targets: [] };
+const labTargetLabel = k => (Stats.LAB_TARGETS.find(t => t.key === k) || { label: k }).label;
+function labStatusChip(st, queued) {
+  const m = LAB_STATUS[st] || { emoji: '•', label: st };
+  return `<span class="lab-chip lab-${st}">${m.emoji} ${m.label}${queued ? ' · en file' : ''}</span>`;
+}
+// Gain apparié : + = le challenger fait mieux que M0 (vert), − = pire.
+function labGainCell(v, extra) {
+  if (v == null || !isFinite(v)) return `<td>—</td>`;
+  const r = Math.round(v), cls = r > 0 ? 'err-ok' : (r < 0 ? 'err-mid' : '');
+  return `<td class="${cls}">${predSigned(v)}${extra || ''}</td>`;
+}
+/* Cibles réellement backtestées : pas de sélecteur qui ne mène à rien. */
+function labAvailTargets(lab) {
+  const seen = new Set(lab.cases.map(c => c.target));
+  return Stats.LAB_TARGETS.filter(t => seen.has(t.key));
+}
+function labSlotTarget(lab, slot) {
+  const av = labAvailTargets(lab);
+  if (labUI[slot] && av.some(t => t.key === labUI[slot])) return labUI[slot];
+  return av.length ? av[0].key : null;
+}
+function labSeg(slot, options, current) {
+  if (options.length < 2) return '';
+  return `<div class="seg lab-seg" data-slot="${slot}">${options.map(o =>
+    `<button type="button" data-val="${o.key}"${o.key === current ? ' class="active"' : ''}>${o.label}</button>`).join('')}</div>`;
+}
+function labCard(title, body, o = {}) {
+  return `
+    <div class="stat-card stat-card-wide"${o.id ? ` id="${o.id}"` : ''}>
+      <div class="sc-head"><div class="sc-title">${title}</div>${o.head || ''}</div>
+      ${body}
+    </div>`;
+}
+const labEmpty = txt => `<div class="pred-table-empty">${txt}</div>`;
+// Features connues AU MOMENT de la prédiction (jamais rien d'ultérieur).
+function labFeatText(c) {
+  const bits = [];
+  if (c.ageDays != null) bits.push(`âge ${c.ageDays} j`);
+  bits.push(`${hhmm(c.anchorMs)} locale`);
+  bits.push(`dodo préc. ${c.features.prevSleepMin == null ? '—' : fmtDuration(Math.round(c.features.prevSleepMin))}`);
+  bits.push(`éveil préc. ${c.features.prevWakeMin == null ? '—' : fmtDuration(Math.round(c.features.prevWakeMin))}`);
+  if (c.target === 'remaining' && c.features.elapsedSleepMin != null) {
+    bits.push(`déjà endormi ${fmtDuration(Math.round(c.features.elapsedSleepMin))}`);
+  }
+  return bits.join(' · ');
+}
+
+/* ---------- ② Champion / Challengers — Maintenant (§3.8.1) ---------- */
+function labNowCard(lab) {
+  if (!lab.nowRows.length) {
+    return labCard('Champion / Challengers — maintenant',
+      labEmpty('Aucun dodo enregistré : aucun modèle n’a de quoi se prononcer.'));
+  }
+  const byT = new Map();
+  lab.nowRows.forEach(r => { if (!byT.has(r.target)) byT.set(r.target, []); byT.get(r.target).push(r); });
+  const blocks = Stats.LAB_TARGETS.filter(t => byT.has(t.key)).map(t => {
+    const rows = byT.get(t.key).map(r => {
+      const isCh = r.modelId === lab.championId;
+      const perf = (lab.view.perf[r.modelId] || {})[t.key];
+      const n = perf ? perf.n : 0;
+      const name = `${r.modelId} — ${labModel(lab, r.modelId).label}`;
+      if (!r.applicable) {
+        return `<tr class="lab-na"><td>${name}</td><td colspan="4">— non applicable <small>(${r.reason})</small></td></tr>`;
+      }
+      const pred = r.predMs != null ? predClock(r.predMs, lab.nowMs) : `—`;
+      const bd = tierBadge(n);
+      // La raison va sur une ligne à part, qui s'enroule : dans la cellule
+      // « Prédiction » elle élargissait la colonne de 200 px et poussait
+      // « Écart vs M0 » et « Statut » hors de l'écran.
+      const why = r.predMs == null
+        ? `<tr class="lab-feat"><td colspan="5">${r.reason}</td></tr>` : '';
+      return `<tr${isCh ? ' class="lab-champ"' : ''}>
+        <td>${isCh ? `<b>${name}</b>` : name}</td>
+        <td>${pred}</td>
+        ${isCh ? '<td>—</td>' : labGainCell(r.deltaVsChampionMin == null ? null : r.deltaVsChampionMin)}
+        <td>${bd.emoji} n=${n}</td>
+        <td>${labStatusChip(lab.view.byTarget[r.modelId][t.key].status, lab.view.byTarget[r.modelId][t.key].queued)}</td>
+      </tr>${why}`;
+    }).join('');
+    return `
+      <div class="lab-block">
+        <div class="lab-block-title">${labTargetLabel(t.key)} <small>${t.hint}</small></div>
+        <div class="lab-scroll"><table class="pred-table lab-table">
+          <thead><tr><th>Modèle</th><th>Prédiction</th><th>Écart vs M0</th><th>Recul</th><th>Statut</th></tr></thead>
+          <tbody>${rows}</tbody>
+        </table></div>
+      </div>`;
+  }).join('');
+  return labCard('Champion / Challengers — maintenant', `
+    ${blocks}
+    <div class="est-n">Un écart indique seulement que les modèles <b>pensent différemment</b> : il ne dit pas lequel a raison — c'est la carte « Performance comparée » qui le dit. L'écart vs M0 est un écart de <i>prédiction</i> (+ = plus tard que M0), pas une erreur.<br>État : <b>${lab.state === 'ASLEEP' ? 'endormi' : (lab.state === 'AWAKE' ? 'éveillé' : 'inconnu')}</b> · calculé à ${hhmm(lab.nowMs)} <button type="button" class="lab-link" id="labRefresh">↻ recalculer</button></div>`,
+    { id: 'lab-now' });
+}
+
+/* ---------- ③ Performance comparée (§3.8.2) ---------- */
+function labPerfCard(lab) {
+  const av = labAvailTargets(lab), t = labSlotTarget(lab, 'perfT');
+  const head = labSeg('perfT', av.map(x => ({ key: x.key, label: x.label })), t);
+  if (!t) return labCard('Performance comparée', labEmpty('Aucun cas backtesté encore (n=0).'), { id: 'lab-perf' });
+
+  const models = lab.models.filter(m => m.predict && m.targets.includes(t));
+  const rows = models.map(m => {
+    const p = (lab.view.perf[m.id] || {})[t], pr = (lab.view.paired[m.id] || {})[t];
+    const isCh = m.id === lab.championId;
+    const name = `${m.id} — ${m.label}`;
+    if (!p || !p.n) {
+      return `<tr class="lab-na"><td>${name}</td><td colspan="5">aucun backtest encore (n=0)</td></tr>`;
+    }
+    const bd = tierBadge(p.n);
+    return `<tr${isCh ? ' class="lab-champ"' : ''}>
+      <td>${isCh ? `<b>${name}</b>` : name}</td>
+      <td>${labMin(p.medAbsMin)}</td>
+      <td>${labMin(p.p80AbsMin)}</td>
+      <td>${predSigned(p.medSignedMin)}</td>
+      <td>${bd.emoji} n=${p.n}</td>
+      ${isCh ? '<td>—</td>' : labGainCell(pr && pr.pairedN ? pr.medianGainMin : null, pr && pr.pairedN ? ` <small>n=${pr.pairedN}</small>` : '')}
+    </tr>`;
+  }).join('');
+
+  // Résumé par challenger (§3.8.2) — la comparaison appariée est centrale.
+  const summaries = models.filter(m => m.id !== lab.championId).map(m => {
+    const p = (lab.view.paired[m.id] || {})[t];
+    const bt = lab.view.byTarget[m.id][t];
+    if (!p || !p.pairedN) {
+      return `<details class="stat-details lab-sum"><summary>${m.id} — ${m.label}</summary>
+        <div class="est-empty">${bt.why || 'Aucun cas comparable à M0 pour l’instant.'}</div></details>`;
+    }
+    const row = (l, v) => `<div class="dt-row"><span class="dt-l">${l}</span><span class="dt-v">${v}</span></div>`;
+    const iqr = p.p25GainMin == null ? '' : row('P25 / P75 du gain', `${predSigned(p.p25GainMin)} / ${predSigned(p.p75GainMin)}`);
+    return `<details class="stat-details lab-sum"><summary>${m.id} — ${m.label} ${labStatusChip(bt.status, bt.queued)}</summary>
+      ${row('n comparable', p.pairedN)}
+      ${row(`erreur médiane ${lab.championId}`, labMin(p.championMedAbsMin))}
+      ${row(`erreur médiane ${m.id}`, labMin(p.challengerMedAbsMin))}
+      ${row(`P80 ${m.id}`, labMin(p.challengerP80AbsMin))}
+      ${row(`gain médian vs ${lab.championId}`, predSigned(p.medianGainMin))}
+      ${iqr}
+      ${row(`${m.id} meilleur`, `${p.wins} / ${p.pairedN} cas${p.ties ? ` (${p.ties} égalité${plural(p.ties)})` : ''}`)}
+      ${row(`biais médian ${m.id}`, predSigned(p.challengerMedSignedMin))}
+      ${row(`${p.recentShortN} derniers cas`, `gain médian ${predSigned(p.recentShortMedianGainMin)}`)}
+      ${row('1er cas comparable', p.firstComparableAgeDays == null ? '—' : `à ${p.firstComparableAgeDays} j`)}
+      <div class="sd-note">${bt.why}</div>
+      <div class="est-n">Paramètres : ${Object.entries(m.parameters).map(([k, v]) => `${k}=${Array.isArray(v) ? v.join('/') : v}`).join(' · ') || '—'}<br>${m.note || ''}</div>
+    </details>`;
+  }).join('');
+
+  return labCard('Performance comparée', `
+    <div class="lab-scroll"><table class="pred-table lab-table">
+      <thead><tr><th>Modèle</th><th>Err. méd.</th><th>P80</th><th>Biais</th><th>Recul</th><th>Gain vs ${lab.championId}</th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table></div>
+    <div class="est-n">Erreur médiane et P80 = erreur <b>absolue</b> des backtests walk-forward. Biais signé = <b>réel − prévu</b> (+ = le réel arrive plus tard). Gain apparié = |erreur ${lab.championId}| − |erreur Mx| sur exactement les mêmes cas (+ = le challenger est meilleur). Le badge de recul dépend du seul <i>n</i> : ce n'est pas une mesure de précision.</div>
+    ${summaries}`, { id: 'lab-perf', head });
+}
+
+/* ---------- ④ Évolution dans le temps (§3.8.3) ---------- */
+function labEvoCard(lab) {
+  const av = labAvailTargets(lab), t = labSlotTarget(lab, 'evoT');
+  const head = labSeg('evoT', av.map(x => ({ key: x.key, label: x.label })), t)
+    + labSeg('evoMetric', LAB_METRICS, labUI.evoMetric);
+  const rows = lab.weekly.filter(w => w.target === t);
+  if (!rows.length) {
+    return labCard('Évolution dans le temps', labEmpty('Aucun cas comparé à M0 encore — la série se remplira semaine après semaine.'), { id: 'lab-evo', head });
+  }
+  const ids = [...new Set(rows.map(w => w.challengerId))].sort();
+  const weeks = [...new Set(rows.map(w => w.ageWeek))].sort((a, b) => a - b);
+  const at = (wk, id) => rows.find(w => w.ageWeek === wk && w.challengerId === id) || null;
+  const metric = labUI.evoMetric;
+  const showChamp = metric === 'med' || metric === 'p80' || metric === 'bias';
+  const cell = r => {
+    if (!r) return '<td>—</td>';
+    const n = ` <small>n=${r.pairedN}</small>`;
+    if (metric === 'gain') return labGainCell(r.medianGainMin, n);
+    if (metric === 'med') return `<td>${labMin(r.challengerMedAbsMin)}${n}</td>`;
+    if (metric === 'p80') return `<td>${labMin(r.challengerP80AbsMin)}${n}</td>`;
+    return `<td>${predSigned(r.challengerMedSignedMin)}${n}</td>`;
+  };
+  const champCell = wk => {
+    const r = rows.find(w => w.ageWeek === wk);
+    if (!r) return '<td>—</td>';
+    if (metric === 'med') return `<td>${labMin(r.championMedAbsMin)}</td>`;
+    return '<td>—</td>';
+  };
+  const body = weeks.map(wk => `<tr>
+      <td>S${wk}</td>
+      ${showChamp && metric === 'med' ? champCell(wk) : ''}
+      ${ids.map(id => cell(at(wk, id))).join('')}
+    </tr>`).join('');
+  const note = metric === 'gain'
+    ? `Lecture attendue : « cette variable ne servait à rien à S${weeks[0]}, puis son gain devient positif vers S${weeks[weeks.length - 1]} ». Un gain positif isolé sur une semaine à petit <i>n</i> ne veut rien dire.`
+    : `Chaque ligne ne contient que les cas de SA semaine, tous prédits en walk-forward : une valeur affichée à S${weeks[0]} n'utilise aucune observation postérieure.`;
+  return labCard('Évolution dans le temps', `
+    <div class="lab-scroll"><table class="pred-table lab-table">
+      <thead><tr><th>Âge</th>${showChamp && metric === 'med' ? `<th>${lab.championId}</th>` : ''}${ids.map(id => `<th>${id}</th>`).join('')}</tr></thead>
+      <tbody>${body}</tbody>
+    </table></div>
+    <div class="est-n">${note}<br>Métrique : <b>${(LAB_METRICS.find(m => m.key === metric) || {}).label}</b> · cible : ${labTargetLabel(t)}.</div>`,
+    { id: 'lab-evo', head });
+}
+
+/* ---------- ⑤ Checkpoints (§3.8.4 + §3.13) ----------
+   Vue reconstruite : les cas sont filtrés sur `realMs <= date`, jamais
+   recalculés avec ce qu'on a appris depuis. */
+function labCheckpointCard(lab) {
+  if (!lab.checkpoints.length) {
+    return labCard('Checkpoints', labEmpty('Date de naissance inconnue : impossible de situer les rendez-vous de lecture.'), { id: 'lab-cp' });
+  }
+  const opts = lab.checkpoints.map(cp =>
+    `<option value="${cp.key}"${cp.key === labUI.cp ? ' selected' : ''}>${cp.label}${cp.week != null ? ` · ${new Date(cp.dateMs).toLocaleDateString('fr-FR', { day: 'numeric', month: 'short' })}` : ''}${cp.future ? ' (à venir)' : ''}</option>`).join('');
+  const head = `<select class="lab-select" data-slot="cp">${opts}</select>`;
+  const cp = lab.checkpoints.find(c => c.key === labUI.cp) || lab.checkpoints[0];
+
+  if (cp.future || !cp.view) {
+    const jours = Math.max(1, Math.round((cp.dateMs - lab.nowMs) / 86400000));
+    return labCard('Checkpoints', `
+      <div class="lab-block-title">${cp.label} — ${cp.focus}</div>
+      <div class="est-empty">Rendez-vous à venir dans ${jours} j (le ${new Date(cp.dateMs).toLocaleDateString('fr-FR', { day: 'numeric', month: 'long' })}). Les modèles concernés (${cp.focusModels.join(', ')}) collectent et backtestent <b>déjà</b> : la semaine ne démarre rien, elle dit seulement « regarde maintenant ».<br><i>${cp.watch}</i></div>`,
+      { id: 'lab-cp', head });
+  }
+
+  const known = lab.cases.filter(c => c.realMs <= cp.dateMs);
+  const focus = cp.focusModels;
+  const rows = lab.models.filter(m => m.predict && m.id !== lab.championId).map(m => {
+    return m.targets.map(t => {
+      const p = (cp.view.paired[m.id] || {})[t], q = (cp.view.perf[m.id] || {})[t];
+      const bt = cp.view.byTarget[m.id][t];
+      const isFocus = focus.includes(m.id);
+      if (!p || !p.pairedN) {
+        return `<tr class="lab-na${isFocus ? ' lab-focus' : ''}"><td>${m.id} · ${labTargetLabel(t)}</td><td colspan="6">en attente de données (n=${q ? q.n : 0})</td></tr>`;
+      }
+      const conf = p.confirmation
+        ? `${p.confirmation.currentN}/${p.confirmation.targetN}${p.confirmation.complete ? ' ✓' : ''}`
+        : '—';
+      return `<tr${isFocus ? ' class="lab-focus"' : ''}>
+        <td>${m.id} · ${labTargetLabel(t)}</td>
+        <td>${p.pairedN}</td>
+        <td>${labMin(p.challengerMedAbsMin)}</td>
+        <td>${labMin(p.challengerP80AbsMin)}</td>
+        <td>${predSigned(p.challengerMedSignedMin)}</td>
+        ${labGainCell(p.medianGainMin)}
+        <td>${labStatusChip(bt.status, bt.queued)}<br><small>10 derniers : ${p.recentShortN ? predSigned(p.recentShortMedianGainMin) : '—'} · confirmation ${conf}</small></td>
+      </tr>`;
+    }).join('');
+  }).join('');
+
+  // Évolution hebdomadaire depuis le checkpoint précédent (item 6 du §3.13).
+  const prev = lab.checkpoints.filter(c => c.week != null && c.dateMs < cp.dateMs).pop();
+  const fromWeek = prev && prev.week != null ? prev.week : 0;
+  const toWeek = cp.week != null ? cp.week : Math.floor((lab.ageDays || 0) / 7);
+  const evo = lab.weekly.filter(w => w.ageWeek >= fromWeek && w.ageWeek <= toWeek
+    && focus.includes(w.challengerId) && known.some(c => c.target === w.target));
+  const evoRows = evo.length
+    ? `<div class="lab-scroll"><table class="pred-table lab-table">
+        <thead><tr><th>Âge</th><th>Modèle</th><th>Cible</th><th>n</th><th>Gain</th></tr></thead>
+        <tbody>${evo.map(w => `<tr><td>S${w.ageWeek}</td><td>${w.challengerId}</td><td>${labTargetLabel(w.target)}</td><td>${w.pairedN}</td>${labGainCell(w.medianGainMin)}</tr>`).join('')}</tbody>
+      </table></div>`
+    : `<div class="est-empty">Pas encore de semaine complète à comparer depuis ${prev ? prev.label : 'le début'}.</div>`;
+
+  // Meilleur / pire cas du modèle mis en avant (item 7) — avec ses features.
+  const fm = focus.find(id => {
+    const m = labModel(lab, id);
+    return m.targets && m.targets.some(t => ((cp.view.paired[id] || {})[t] || {}).pairedN);
+  });
+  let extremes = `<div class="est-empty">Aucun cas apparié pour ${focus.join(', ')} à cette date : rien à disséquer encore.</div>`;
+  if (fm) {
+    const cs = known.filter(c => c.preds[fm] && c.preds[lab.championId]);
+    const gains = cs.map(c => ({ c, g: c.preds[lab.championId].absErrMin - c.preds[fm].absErrMin }));
+    gains.sort((a, b) => b.g - a.g);
+    const best = gains[0], worst = gains[gains.length - 1];
+    const line = (x, lbl) => `<div class="lab-case">
+      <div class="lab-case-h">${lbl} — ${predSigned(x.g)} <small>${labTargetLabel(x.c.target)} · réel ${hhmm(x.c.realMs)} · ${lab.championId} ${hhmm(x.c.preds[lab.championId].predMs)} · ${fm} ${hhmm(x.c.preds[fm].predMs)}</small></div>
+      <div class="lab-case-f">${labFeatText(x.c)}</div></div>`;
+    extremes = best === worst ? line(best, `Cas unique ${fm}`)
+      : `${line(best, `Meilleur cas ${fm}`)}${line(worst, `Pire cas ${fm}`)}`;
+  }
+
+  return labCard('Checkpoints', `
+    <div class="lab-block-title">${cp.label} — ${cp.focus} <small>${cp.week != null ? new Date(cp.dateMs).toLocaleDateString('fr-FR', { day: 'numeric', month: 'long' }) : hhmm(cp.dateMs)}</small></div>
+    <div class="est-rel">Ce qu'on regarde : <i>${cp.watch}</i><br>À cette date : ${cp.view.casesN} cas connus · modèles calculables : ${lab.models.filter(m => m.predict && m.targets.some(t => ((cp.view.perf[m.id] || {})[t] || {}).n)).map(m => m.id).join(', ') || 'aucun'}.</div>
+    <div class="lab-scroll"><table class="pred-table lab-table">
+      <thead><tr><th>Expérience</th><th>n app.</th><th>Err. méd.</th><th>P80</th><th>Biais</th><th>Gain</th><th>Statut</th></tr></thead>
+      <tbody>${rows || '<tr><td colspan="7">Aucun challenger instancié.</td></tr>'}</tbody>
+    </table></div>
+    <div class="lab-block"><div class="lab-block-title">Évolution depuis ${prev ? prev.label : 'le début'}</div>${evoRows}</div>
+    <div class="lab-block"><div class="lab-block-title">Meilleur / pire cas et features associées</div>${extremes}</div>
+    <div class="est-n">Vue <b>reconstruite</b> : seuls les cas déjà survenus à cette date sont pris, et chaque prédiction avait déjà été faite en walk-forward — « S6 » ne peut donc pas emprunter un modèle nourri par les données de S10. Décision attendue, volontairement humaine : continuer à observer · geler pour confirmation · promouvoir · rejeter · ne rien faire.</div>`,
+    { id: 'lab-cp', head });
+}
+
+/* ---------- ⑥ Cas par cas (§3.8.5) ---------- */
+function labCasesCard(lab) {
+  const av = labAvailTargets(lab), t = labSlotTarget(lab, 'caseT');
+  if (!t) return labCard('Cas par cas', labEmpty('Aucun cas backtesté encore (n=0).'), { id: 'lab-cases' });
+  const rowsAll = lab.cases.filter(c => c.target === t && c.preds[lab.championId]);
+  const challengers = lab.models.filter(m => m.predict && m.id !== lab.championId && m.targets.includes(t)
+    && rowsAll.some(c => c.preds[m.id]));
+  let sel = labUI.caseM;
+  if (sel !== 'all' && !challengers.some(m => m.id === sel)) sel = challengers.length ? challengers[0].id : 'all';
+  const shown = sel === 'all' ? challengers.map(m => m.id) : [sel];
+  const cols = [lab.championId, ...shown];
+  const head = labSeg('caseT', av.map(x => ({ key: x.key, label: x.label })), t)
+    + (challengers.length > 1
+      ? `<select class="lab-select" data-slot="caseM">${[...challengers.map(m => ({ key: m.id, label: `${m.id} vs ${lab.championId}` })), { key: 'all', label: 'tous les modèles' }]
+        .map(o => `<option value="${o.key}"${o.key === sel ? ' selected' : ''}>${o.label}</option>`).join('')}</select>`
+      : '');
+
+  if (!rowsAll.length) return labCard('Cas par cas', labEmpty('Aucun cas backtesté pour cette cible.'), { id: 'lab-cases', head });
+  const page = rowsAll.slice(-labUI.caseN).reverse();
+  const body = page.map(c => {
+    const errs = cols.filter(id => c.preds[id]).map(id => ({ id, e: c.preds[id].absErrMin }));
+    errs.sort((a, b) => a.e - b.e);
+    const best = errs.length ? errs[0].id : null;
+    const cells = cols.map(id => {
+      const p = c.preds[id];
+      if (!p) return '<td>—</td>';
+      return `<td class="${id === best ? 'err-ok' : ''}">${hhmm(p.predMs)}<br><small>${predSigned(p.signedErrMin)}</small></td>`;
+    }).join('');
+    const last = sel === 'all'
+      ? `<td>${best || '—'}</td>`
+      : labGainCell(c.preds[sel] ? c.preds[lab.championId].absErrMin - c.preds[sel].absErrMin : null);
+    return `<tr>
+        <td>${new Date(c.anchorMs).toLocaleDateString('fr-FR', { day: 'numeric', month: 'short' })} · ${hhmm(c.anchorMs)}</td>
+        <td>${predClock(c.realMs, c.anchorMs)}</td>${cells}${last}
+      </tr>
+      <tr class="lab-feat"><td colspan="${3 + cols.length}">${labFeatText(c)}</td></tr>`;
+  }).join('');
+  const more = rowsAll.length > labUI.caseN
+    ? `<button type="button" class="lab-link" id="labMore">Afficher ${Math.min(LAB_CASES_PAGE, rowsAll.length - labUI.caseN)} cas de plus</button>`
+    : '';
+  return labCard('Cas par cas', `
+    <div class="lab-scroll"><table class="pred-table lab-table lab-cases">
+      <thead><tr><th>Cas</th><th>Réel</th>${cols.map(id => `<th>${id}</th>`).join('')}<th>${sel === 'all' ? 'Meilleur' : 'Gain'}</th></tr></thead>
+      <tbody>${body}</tbody>
+    </table></div>
+    <div class="est-n">${page.length} cas affichés sur ${rowsAll.length} (du plus récent au plus ancien) ${more}<br>Sous chaque heure prévue : l'écart signé <b>réel − prévu</b>. La ligne grise donne les features connues <b>au moment</b> de la prédiction — c'est ce qui permet de voir un effet conditionnel (« M3 aide surtout le soir ») au lieu de tout réduire à une moyenne.</div>`,
+    { id: 'lab-cases', head });
+}
+
+/* ---------- ⑦ Expériences (§3.10 / §3.12) ---------- */
+function labExpCard(lab) {
+  const items = lab.models.map(m => {
+    const st = lab.view.status[m.id];
+    const targets = m.targets.length ? m.targets.map(t => {
+      const bt = lab.view.byTarget[m.id][t], p = (lab.view.paired[m.id] || {})[t];
+      const conf = p && p.confirmation
+        ? `<div class="lab-prog"><div class="lab-prog-bar"><span style="width:${Math.min(100, Math.round(100 * p.confirmation.currentN / p.confirmation.targetN))}%"></span></div>
+           <div class="lab-prog-txt">bloc de confirmation : ${p.confirmation.currentN} / ${p.confirmation.targetN} nouveaux cas · gain provisoire ${predSigned(p.confirmation.medianGainMin)}${p.confirmation.complete ? ' · <b>complet</b>' : ''}</div></div>`
+        : '';
+      return `<div class="lab-exp-t">
+          <div class="lab-exp-h">${labTargetLabel(t)} ${labStatusChip(bt.status, bt.queued)} ${p && p.pairedN ? `<small>n apparié ${p.pairedN}</small>` : ''}</div>
+          <div class="lab-exp-w">${bt.why}</div>
+          ${conf}
+        </div>`;
+    }).join('') : `<div class="lab-exp-w">${m.blocked || 'Aucune cible déclarée.'}</div>`;
+    return `<div class="lab-exp">
+        <div class="lab-exp-title">${m.id} — ${m.label} <small>v${m.version}</small> ${labStatusChip(st)}</div>
+        <div class="lab-exp-note">${m.note || ''}</div>
+        ${targets}
+      </div>`;
+  }).join('');
+  return labCard('Expériences', `
+    ${items}
+    <div class="est-n">Cycle de vie : <code>collecting → shadow → exploration → confirming → active</code> (ou <code>rejected</code>). Aucun statut n'est déduit de l'âge du bébé. Le <b>gel</b> pour confirmation est mécanique ; <b>active</b> et <b>rejected</b> restent des décisions humaines et ne sont jamais posées par l'app. Au plus ${Stats.FEATURE_MAX_CONCURRENT_TRIALS} confirmations en parallèle : les suivantes attendent leur tour. Seuils produit : exploration dès ${Stats.FEATURE_EXPLORATION_MIN_PAIRED_N} cas appariés, gel envisagé dès ${Stats.FEATURE_CONFIRM_TRIGGER_N} cas si le gain médian ≥ ${Math.round(Stats.FEATURE_MIN_GAIN_MIN_MS / 60000)} min, confirmation sur ${Stats.FEATURE_CONFIRM_N} cas non recouvrants.</div>`,
+    { id: 'lab-exp' });
+}
+
+/* ---------- ⑧ Export LLM (§3.14) ---------- */
+function labExportCard(lab) {
+  const c = lab.counts;
+  return labCard('Analyse externe', `
+    <div class="est-empty">Un seul fichier JSON, auto-descriptif (conventions de signe, définitions et consignes de lecture voyagent dedans), généré <b>localement</b> dans le navigateur : rien n'est envoyé à un serveur. Domaine sommeil uniquement, aucun nom, aucune date de naissance — seulement l'âge en jours.</div>
+    <button type="button" class="btn btn-primary lab-btn" id="labExport">Exporter pour analyse LLM (.json)</button>
+    <div class="est-n" id="labExportSum">${c.models} modèles (${c.instantiated} instanciés) · ${c.cases} cas · ${c.weekFrom == null ? 'aucune semaine' : `S${c.weekFrom}–S${c.weekTo}`} · schéma ${labSchemaLabel()}</div>`,
+    { id: 'lab-export' });
+}
+const labSchemaLabel = () => 'v' + String(Stats.LAB_SCHEMA_VERSION).split('/').pop();
+
+function exportLabJSON() {
+  // §3.14 : on recalcule au clic, on construit le snapshot, on télécharge.
+  const lab = Stats.sleepLab(Store.all(), { domainStart: DATA_START, birth: BIRTH });
+  labLast = lab;
+  const snap = Stats.labExport(lab);
+  const now = new Date();
+  downloadText(`sleep-prediction-lab_${localYMD(now)}_${localHM(now).replace(':', '')}.json`,
+    JSON.stringify(snap, null, 2), 'application/json');
+  const c = lab.counts;
+  const sum = `${c.models} modèles · ${c.cases} cas · ${c.weekFrom == null ? 'aucune semaine' : `S${c.weekFrom}–S${c.weekTo}`} · schéma ${labSchemaLabel()}`;
+  const el = document.getElementById('labExportSum');
+  if (el) el.innerHTML = `✅ Export généré : ${sum}`;
+  toast(sum);
+}
+
+/* ---------- ① bis Suggestions in-app (§3.13) ----------
+   Deux types seulement, confinés à cet onglet : rappel de checkpoint et
+   signal data-driven. Aucune n'active quoi que ce soit. */
+function labSuggestions(lab) {
+  const out = [];
+  const minGain = Stats.FEATURE_MIN_GAIN_MIN_MS / 60000;
+
+  // A. Checkpoint temporel : la semaine est atteinte ET il y a de quoi regarder.
+  const past = lab.checkpoints.filter(c => c.week != null && !c.future);
+  const cp = past.length ? past[past.length - 1] : null;
+  if (cp) {
+    const ready = [];
+    for (const id of cp.focusModels) {
+      const m = labModel(lab, id);
+      for (const t of (m.targets || [])) {
+        const p = ((cp.view || lab.view).paired[id] || {})[t];
+        if (p && p.pairedN >= Stats.FEATURE_EXPLORATION_MIN_PAIRED_N) ready.push({ id, label: m.label, t, n: p.pairedN });
+      }
+    }
+    if (ready.length) {
+      const r = ready[0];
+      out.push({
+        key: `cp-${cp.key}`, ic: '🔬', title: `Point d'étape ${cp.label} disponible`,
+        txt: `${r.id} « ${r.label} » dispose maintenant de ${r.n} cas comparables à ${lab.championId} sur la cible ${labTargetLabel(r.t).toLowerCase()}.`,
+        acts: [{ act: 'cp', val: cp.key, label: 'Voir les résultats' }, { act: 'later', label: 'Plus tard' }],
+      });
+    }
+  }
+
+  // B. Signal data-driven, indépendant d'une semaine précise.
+  for (const m of lab.models) {
+    if (!m.predict || m.id === lab.championId) continue;
+    for (const t of m.targets) {
+      const p = (lab.view.paired[m.id] || {})[t];
+      if (!p || !p.pairedN) continue;
+      const st = lab.view.byTarget[m.id][t].status;
+      if (p.confirmation && p.confirmation.complete) {
+        out.push({
+          key: `ok-${m.id}-${t}`, ic: '✅', title: 'Résultat confirmé',
+          txt: `Sur ${p.confirmation.currentN} nouveaux cas non utilisés pour sélectionner ${m.id}, le gain médian reste ${predSigned(p.confirmation.medianGainMin)}. Décision à prendre : conserver ${lab.championId} ou promouvoir ${m.id}.`,
+          acts: [{ act: 'perf', val: t, label: 'Voir le dossier de comparaison' }],
+        });
+      } else if (st === 'confirming' && p.confirmation) {
+        out.push({
+          key: `conf-${m.id}-${t}`, ic: '🧪', title: 'Confirmation en cours',
+          txt: `${m.id} est gelé. ${p.confirmation.currentN} / ${p.confirmation.targetN} nouveaux cas de confirmation collectés. Gain provisoire : ${predSigned(p.confirmation.medianGainMin)}.`,
+          acts: [{ act: 'perf', val: t, label: `Comparer ${m.id} à ${lab.championId}` }],
+        });
+      } else if (st === 'exploration' && p.medianGainMin != null && p.medianGainMin >= minGain) {
+        out.push({
+          key: `sig-${m.id}-${t}`, ic: '🧪', title: 'Un challenger se détache',
+          txt: `${m.id} améliore la baseline de ${predSigned(p.medianGainMin)} en médiane sur ${p.pairedN} cas appariés. Ce résultat est exploratoire ; aucune modification n'est appliquée.`,
+          acts: [{ act: 'perf', val: t, label: `Comparer ${m.id} à ${lab.championId}` }, { act: 'later', label: 'Plus tard' }],
+        });
+      }
+    }
+  }
+  return out.filter(s => !labDismissed.has(s.key));
+}
+
+function renderLab() {
+  const lab = labLast;
+  const host = document.getElementById('labHost');
+  if (!lab || !host) return;
+  host.innerHTML = [
+    labNowCard(lab), labPerfCard(lab), labEvoCard(lab),
+    labCheckpointCard(lab), labCasesCard(lab), labExpCard(lab), labExportCard(lab),
+  ].join('');
+
+  const sug = document.getElementById('labSuggest');
+  if (sug) {
+    sug.innerHTML = labSuggestions(lab).map(s => `
+      <div class="lab-sug" data-key="${s.key}">
+        <span class="pb-ic">${s.ic}</span>
+        <div class="lab-sug-b">
+          <div class="lab-sug-t">${s.title}</div>
+          <div class="lab-sug-x">${s.txt}</div>
+          <div class="lab-sug-a">${s.acts.map(a =>
+      `<button type="button" class="lab-link" data-act="${a.act}"${a.val ? ` data-val="${a.val}"` : ''}>${a.label}</button>`).join('')}</div>
+        </div>
+      </div>`).join('');
+  }
+  bindLab();
+}
+
+function bindLab() {
+  document.querySelectorAll('#labHost .lab-seg button').forEach(b => b.onclick = () => {
+    labUI[b.parentElement.dataset.slot] = b.dataset.val;
+    if (b.parentElement.dataset.slot === 'caseT') labUI.caseN = LAB_CASES_PAGE;
+    renderLab();
+  });
+  document.querySelectorAll('#labHost .lab-select').forEach(s => s.onchange = () => {
+    labUI[s.dataset.slot] = s.value;
+    renderLab();
+  });
+  const more = document.getElementById('labMore');
+  if (more) more.onclick = () => { labUI.caseN += LAB_CASES_PAGE; renderLab(); };
+  const rf = document.getElementById('labRefresh');
+  if (rf) rf.onclick = () => renderPrediction();
+  const ex = document.getElementById('labExport');
+  if (ex) ex.onclick = exportLabJSON;
+
+  document.querySelectorAll('#labSuggest .lab-link').forEach(b => b.onclick = () => {
+    const key = b.closest('.lab-sug').dataset.key, act = b.dataset.act;
+    if (act === 'later') { labDismissed.add(key); renderLab(); return; }
+    if (act === 'cp') labUI.cp = b.dataset.val;
+    if (act === 'perf') labUI.perfT = b.dataset.val;
+    renderLab();
+    const target = document.getElementById(act === 'cp' ? 'lab-cp' : 'lab-perf');
+    if (target) target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  });
+}
+
 /* ---------- Export (exhaustivité pour analyse / IA) ---------- */
 function downloadText(filename, text, mime) {
   const blob = new Blob([text], { type: (mime || 'text/plain') + ';charset=utf-8' });
@@ -1847,7 +2680,13 @@ wireLockScreen();
 wirePullToRefresh();
 renderTabbar();
 renderCurrent();                              // rendu immédiat depuis le cache local (offline-first)
-setInterval(() => { if (currentView === 'suivi') { renderStatusStrip(); renderGrid(); } }, 60000);
+// Unique timer de l'app : rafraîchit ce qui est relatif à « maintenant ».
+// Sur l'onglet Prédiction, SEULE la ligne d'état est réécrite — les prédictions
+// elles-mêmes ne sont recalculées qu'à l'ouverture de l'onglet (§3.7).
+setInterval(() => {
+  if (currentView === 'suivi') { renderStatusStrip(); renderGrid(); }
+  else if (currentView === 'prediction') refreshPredictionRel();
+}, 60000);
 
 // Démarrage de la synchro (non bloquant pour l'UI)
 (async () => {

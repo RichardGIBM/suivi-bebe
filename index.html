@@ -14,7 +14,7 @@
   <meta name="apple-mobile-web-app-status-bar-style" content="default" />
   <meta name="apple-mobile-web-app-title" content="Suivi Bébé" />
 
-  <link rel="stylesheet" href="styles.css?v=26" />
+  <link rel="stylesheet" href="styles.css?v=30" />
 </head>
 <body>
   <!-- Indicateur "tirer pour rafraîchir" -->
@@ -81,6 +81,9 @@
     <!-- ===== Vue STATS ===== -->
     <div class="view" id="view-stats" hidden></div>
 
+    <!-- ===== Vue PRÉDICTION (expérimental) ===== -->
+    <div class="view" id="view-prediction" hidden></div>
+
   </div>
 
   <!-- Pastille d'état de synchro (masquée si synchro non configurée) -->
@@ -121,8 +124,8 @@
 
   <script src="vendor/supabase.js"></script>
   <script src="config.js?v=15"></script>
-  <script src="stats.js?v=28"></script>
-  <script src="app.js?v=28"></script>
+  <script src="stats.js?v=30"></script>
+  <script src="app.js?v=30"></script>
   <script>
     // Enregistrement du service worker (PWA hors-ligne)
     if ('serviceWorker' in navigator) {

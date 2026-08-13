@@ -89,13 +89,44 @@ module.exports = ({ suite, test, eq, deepEq, ok, Stats, ROOT, fs, path }) => {
   });
 
   test('surface publique de stats.js (contrat pour app.js et le prédictif)', () => {
-    for (const k of ['compute', 'sleepSegments', 'sleepEpisodes', 'daysWindow', 'startOfDay', 'addDays', 'dayKey', 'isSameDay']) {
+    for (const k of ['compute', 'sleepSegments', 'sleepEpisodes', 'daysWindow', 'startOfDay', 'addDays', 'dayKey', 'isSameDay',
+      'sleepPrediction', 'sleepLab', 'labExport']) {
       eq(typeof Stats[k], 'function', `Stats.${k}`);
     }
     eq(Stats.SLEEP_MAX_MS, 16 * 60 * 60 * 1000, 'SLEEP_MAX_MS');
     eq(Stats.TEMP_ALERT, 38.0, 'TEMP_ALERT');
     deepEq([Stats.TEMP_MIN, Stats.TEMP_MAX], [34.0, 42.0], 'plage de température plausible');
     eq(Stats._overlapMin, undefined, 'ancienne règle de chevauchement supprimée (code mort)');
+  });
+
+  test('app.js sait nommer tous les statuts du cycle de vie de stats.js', () => {
+    // Un statut ajouté dans stats.js et oublié dans LAB_STATUS s'afficherait en
+    // brut (« confirming ») au lieu de son libellé : lisible pour moi, pas pour
+    // l'écran. Le contrôle va dans les deux sens (pas de statut fantôme non plus).
+    const bloc = (SRC.app.match(/const LAB_STATUS = \{([\s\S]*?)\n\};/) || [])[1];
+    ok(bloc, 'app.js : bloc const LAB_STATUS');
+    const declares = [...bloc.matchAll(/^\s*(\w+):\s*\{\s*emoji:\s*'([^']+)',\s*label:\s*'([^']+)'/gm)];
+    deepEq(declares.map(m => m[1]).sort(), [...Stats.LAB_STATUS_ORDER].sort(),
+      'LAB_STATUS (app.js) ≡ Stats.LAB_STATUS_ORDER');
+    declares.forEach(m => ok(m[2].trim() && m[3].trim(), `${m[1]} : emoji + libellé non vides`));
+    // La pastille neutre de .lab-chip sert de repli assumé (collecting/shadow).
+    ok(/\.lab-chip \{/.test(SRC.styles), 'styles.css : .lab-chip a un style par défaut');
+  });
+
+  test('le laboratoire ne persiste rien (§3.11)', () => {
+    // L'état du labo (labLast/labDismissed/labUI) doit mourir avec l'onglet :
+    // une clé localStorage figerait une comparaison faite sur d'anciennes données.
+    const persist = codeLines(SRC.app)
+      .filter(l => /localStorage|Store\.(save|add|put|set)/.test(l.txt) && /lab/i.test(l.txt))
+      .map(l => l.n);
+    deepEq(persist, [], 'aucune écriture persistante depuis le laboratoire');
+    for (const v of ['labLast', 'labDismissed', 'labUI']) {
+      ok(new RegExp(`^(let|const) ${v}\\b`, 'm').test(SRC.app), `${v} : état en mémoire seulement`);
+    }
+    // Le modèle M8 est déclaré mais non implémenté (§3.8.6) : il ne doit pas
+    // exister de bouton qui prétende le lancer.
+    const m8 = Stats.LAB_MODELS.find(m => m.id === 'M8');
+    ok(m8 && !m8.predict, 'M8 déclaré sans implémentation');
   });
 
   test('les types d’anomalies de stats.js sont tous affichés par app.js', () => {

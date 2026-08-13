@@ -1,0 +1,427 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, maximum-scale=1.0, user-scalable=no" />
+<title>Mockup — onglet Prédiction</title>
+<link rel="stylesheet" href="styles.css" />
+<style>
+  /* ===== Additions propres à ce mockup (pas dans styles.css) ===== */
+
+  .mockup-tag {
+    position: fixed; top: 0; left: 0; right: 0; z-index: 90;
+    background: #2b2b30; color: #fff; text-align: center;
+    font-size: 11px; font-weight: 600; letter-spacing: .02em;
+    padding: 5px 8px calc(5px + var(--safe-top));
+  }
+  #app { padding-top: calc(var(--safe-top) + 34px); }
+
+  /* Sélecteur d'état simulé (réutilise le style visuel de .per-btn) */
+  .state-sel-wrap { margin-bottom: 14px; }
+  .state-sel-label { font-size: 11px; color: var(--text-soft); text-align: center; margin: 0 0 6px; }
+
+  /* Bandeau expérimental permanent — même thème que .quality-box, non repliable */
+  .pred-banner {
+    display: flex; align-items: flex-start; gap: 9px;
+    background: #fff8f2; border: 1px solid #f0d9c4; border-radius: var(--radius);
+    padding: 12px 14px; margin-bottom: 16px;
+  }
+  .pred-banner .pb-ic { font-size: 17px; line-height: 1.3; flex: 0 0 auto; }
+  .pred-banner .pb-txt { font-size: 12.5px; color: #a35a2a; line-height: 1.4; }
+  .pred-banner .pb-txt b { font-weight: 700; }
+
+  /* Note dynamique sous le sélecteur d'état (date / âge simulés) */
+  .state-sel-note { font-size: 11px; color: var(--text-soft); text-align: center; margin-top: 6px; }
+
+  /* Carte « contexte » — compteurs purement informatifs, jamais des portes (§3.1/§3.8) */
+  .ctx-list { display: flex; flex-direction: column; gap: 4px; margin-top: 4px; }
+  .ctx-group + .ctx-group { margin-top: 6px; padding-top: 10px; border-top: 1px dashed var(--line); }
+  .ctx-group-title {
+    font-size: 10.5px; font-weight: 700; color: var(--text-soft);
+    text-transform: uppercase; letter-spacing: .03em; margin-bottom: 6px;
+  }
+  .ctx-row { display: flex; justify-content: space-between; align-items: baseline; padding: 2px 0; }
+  .ctx-row .cr-label { font-size: 12.5px; color: var(--text); }
+  .ctx-row .cr-val { font-size: 12px; color: var(--text-soft); font-variant-numeric: tabular-nums; flex: 0 0 auto; text-align: right; }
+
+  /* Estimation actuelle — deux blocs (endormissement / réveil) */
+  .est-split { display: flex; flex-wrap: wrap; gap: 18px; margin-top: 2px; }
+  .est-block { flex: 1 1 220px; min-width: 0; }
+  .est-block:not(:first-child) { border-top: 1px solid var(--line); padding-top: 12px; }
+  .est-block-title { font-size: 12px; font-weight: 700; color: var(--text-soft); margin-bottom: 6px; }
+  .est-hero { font-size: 24px; font-weight: 800; color: var(--text); font-variant-numeric: tabular-nums; }
+  .est-hero small { font-size: 12px; font-weight: 600; color: var(--text-soft); margin-left: 4px; }
+  .est-hero .badge-chip { font-size: 16px; margin-left: 2px; vertical-align: 2px; }
+  .est-range { font-size: 12.5px; color: var(--text-soft); margin-top: 4px; line-height: 1.4; }
+  .est-n { font-size: 11px; color: var(--text-soft); margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--line); }
+  .est-empty { font-size: 13px; color: var(--text-soft); padding: 6px 0; line-height: 1.5; }
+  .sd-note { font-size: 11.5px; color: #a35a2a; margin-top: 10px; padding-top: 8px; border-top: 1px solid var(--line); line-height: 1.4; }
+
+  /* Tableau prédiction vs réalité */
+  .pred-table { width: 100%; border-collapse: collapse; margin-top: 4px; }
+  .pred-table th, .pred-table td { padding: 8px 4px; font-size: 12.5px; text-align: right; font-variant-numeric: tabular-nums; border-top: 1px solid var(--line); }
+  .pred-table th { font-size: 10.5px; color: var(--text-soft); font-weight: 600; text-align: right; border-top: none; padding-bottom: 6px; }
+  .pred-table th:first-child, .pred-table td:first-child { text-align: left; }
+  .pred-table td:first-child { color: var(--text-soft); }
+  .pred-table td.err-ok { color: #4f7a3a; font-weight: 700; }
+  .pred-table td.err-mid { color: #a35a2a; font-weight: 700; }
+  .pred-table-empty { font-size: 13px; color: var(--text-soft); padding: 10px 0; text-align: center; }
+</style>
+</head>
+<body>
+
+  <div class="mockup-tag">MOCKUP STATIQUE — aperçu du futur onglet « Prédiction » · données fictives</div>
+
+  <div id="app">
+
+    <header class="view-header">
+      <h1>🔮 Prédiction</h1>
+      <p class="view-sub">Backtesting en direct — mode laboratoire</p>
+    </header>
+
+    <div class="state-sel-wrap">
+      <p class="state-sel-label">Simuler l'avancement dans le temps</p>
+      <div class="period-sel" id="stateSel">
+        <button class="per-btn active" data-state="j7">Aujourd'hui · J7</button>
+        <button class="per-btn" data-state="s3">Semaine 3</button>
+        <button class="per-btn" data-state="s9">Semaine 9</button>
+      </div>
+      <p class="state-sel-note" id="stateLabel"></p>
+    </div>
+
+    <div class="pred-banner">
+      <span class="pb-ic">⚠️</span>
+      <span class="pb-txt"><b>Onglet expérimental.</b> Ces chiffres sont recalculés en direct à partir de ce qui est déjà mesuré pour ce bébé. Avec peu de données, ils sont volontairement affichés quand même — regarde le badge et le <i>n</i> de chaque carte pour juger toi-même à quel point t'y fier.</span>
+    </div>
+
+    <div class="stat-grid">
+      <div class="stat-card stat-card-wide">
+        <div class="sc-head"><div class="sc-title">Contexte</div></div>
+        <div class="ctx-list" id="ctxList"></div>
+      </div>
+
+      <div class="stat-card stat-card-wide">
+        <div class="sc-head"><div class="sc-title">Estimation actuelle — plage de sommeil</div></div>
+        <div class="est-split">
+          <div class="est-block">
+            <div class="est-block-title">🌙 Endormissement estimé</div>
+            <div id="estOnset"></div>
+          </div>
+          <div class="est-block">
+            <div class="est-block-title">🌅 Réveil estimé</div>
+            <div id="estWake"></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="stat-card">
+        <div class="sc-head"><div class="sc-title">Qualité du backtest — endormissement</div></div>
+        <div class="est-hero" id="q1Hero"></div>
+        <div class="est-range" id="q1Sub"></div>
+        <div class="sc-chart" id="q1Chart"></div>
+      </div>
+
+      <div class="stat-card">
+        <div class="sc-head"><div class="sc-title">Qualité du backtest — réveil</div></div>
+        <div class="est-hero" id="q2Hero"></div>
+        <div class="est-range" id="q2Sub"></div>
+        <div class="sc-chart" id="q2Chart"></div>
+        <div class="sd-note" id="q2Note"></div>
+      </div>
+
+      <div class="stat-card stat-card-wide">
+        <div class="sc-head"><div class="sc-title">Prédiction vs réalité — endormissement</div></div>
+        <div id="table1Block"></div>
+      </div>
+
+      <div class="stat-card stat-card-wide">
+        <div class="sc-head"><div class="sc-title">Prédiction vs réalité — réveil</div></div>
+        <div id="table2Block"></div>
+      </div>
+    </div>
+
+  </div>
+
+  <nav class="tabbar">
+    <button class="tab" data-tab="suivi"><span class="tab-emoji">📋</span><span>Suivi</span></button>
+    <button class="tab" data-tab="appris"><span class="tab-emoji">✨</span><span>Appris</span></button>
+    <button class="tab" data-tab="stats"><span class="tab-emoji">📊</span><span>Stats</span></button>
+    <button class="tab active" data-tab="prediction"><span class="tab-emoji">🔮</span><span>Prédiction</span></button>
+  </nav>
+
+  <div class="toast" id="toast"></div>
+
+<script>
+const CHART = { sein: '#eb6834', biberon: '#2a78d6', vert: '#6f9e57', grid: '#e7e8ec', ink: '#8a8a93' }; // identique à app.js:342 — pas de clé inventée
+const SD_MAX_IQR_MEDIAN_RATIO = 2.5; // produit — même seuil que RECOS-prediction-sommeil.md §3.3
+
+/* ---------- Petits utilitaires horaires (calcul en minutes depuis le dernier réveil) ---------- */
+function addMin(hhmm, minutes) {
+  const [h, m] = hhmm.split(':').map(Number);
+  let total = h * 60 + m + Math.round(minutes);
+  const dayOffset = Math.floor(total / 1440);
+  total = ((total % 1440) + 1440) % 1440;
+  const hh = String(Math.floor(total / 60)).padStart(2, '0');
+  const mm = String(total % 60).padStart(2, '0');
+  return { clock: `${hh}:${mm}`, nextDay: dayOffset > 0 };
+}
+function fmtClock(r) { return r.clock + (r.nextDay ? ' (+1j)' : ''); }
+function fmtDur(min) {
+  min = Math.round(min);
+  if (min < 60) return `${min} min`;
+  const h = Math.floor(min / 60), m = min % 60;
+  return m === 0 ? `${h} h` : `${h} h ${String(m).padStart(2, '0')}`;
+}
+
+/* ---------- Données fictives par état simulé ---------- */
+const STATES = {
+  j7: {
+    label: 'Aujourd’hui · 13 août 2026 · bébé né le 6 août, J7',
+    ageDays: 7,
+    reliableDays: 2,
+    lastWake: '07:00',
+    onset: { median: 72, p25: null, p75: null, n: 1 },
+    duration: null,
+    quality1: { backtestN: 0, errors: [], medianErr: null, p80Err: null },
+    quality2: { backtestN: 0, errors: [], medianErr: null, p80Err: null },
+    roundtrip: { n: 0 },
+    table1: [],
+    table2: [],
+  },
+  s3: {
+    label: 'Simulation · vers le 27 août 2026 · bébé de 3 semaines',
+    ageDays: 21,
+    reliableDays: 16,
+    lastWake: '14:15',
+    onset: { median: 58, p25: 45, p75: 74, n: 18 },
+    duration: { median: 80, p25: 25, p75: 230, n: 16 },
+    quality1: { backtestN: 14, errors: [34, 21, 40, 18, 27, 9, 31, 22, 15, 38, 26, 19, 24, 30], medianErr: 24, p80Err: 38 },
+    quality2: { backtestN: 13, errors: [61, 38, 72, 45, 29, 58, 66, 33, 50, 41, 55, 37, 48], medianErr: 48, p80Err: 68 },
+    roundtrip: { n: 13, p25Err: 34, p75Err: 52 },
+    table1: [
+      { pred: '14:52', real: '15:19', errMin: 27 },
+      { pred: '17:10', real: '16:55', errMin: 15 },
+      { pred: '20:35', real: '21:03', errMin: 28 },
+      { pred: '02:18', real: '02:05', errMin: 13 },
+      { pred: '06:40', real: '07:22', errMin: 42 },
+      { pred: '09:55', real: '09:48', errMin: 7 },
+    ],
+    table2: [
+      { pred: '16:33', real: '16:58', errMin: 25 },
+      { pred: '18:40', real: '18:22', errMin: 18 },
+      { pred: '22:15', real: '23:40', errMin: 85 },
+      { pred: '03:50', real: '04:05', errMin: 15 },
+      { pred: '07:55', real: '07:38', errMin: 17 },
+      { pred: '10:20', real: '11:45', errMin: 85 },
+    ],
+  },
+  s9: {
+    label: 'Simulation · vers le 8 octobre 2026 · bébé de 9 semaines',
+    ageDays: 63,
+    reliableDays: 14,
+    lastWake: '07:20',
+    onset: { median: 67, p25: 55, p75: 79, n: 40 },
+    duration: { median: 105, p25: 75, p75: 145, n: 42 },
+    quality1: {
+      backtestN: 40,
+      errors: [11, 8, 19, 14, 6, 22, 9, 13, 17, 5, 20, 12, 10, 15, 7, 18, 11, 9, 14, 16, 8, 12, 19, 6, 10, 15, 11, 13, 9, 17],
+      medianErr: 11, p80Err: 19,
+    },
+    quality2: {
+      backtestN: 45,
+      errors: [15, 22, 9, 31, 18, 27, 12, 35, 20, 8, 25, 16, 29, 11, 33, 19, 24, 7, 28, 14, 21, 36, 10, 26, 17, 23, 13, 30, 19, 22],
+      medianErr: 22, p80Err: 39,
+    },
+    roundtrip: { n: 42, p25Err: 19, p75Err: 19 },
+    table1: [
+      { pred: '13:40', real: '13:52', errMin: 12 },
+      { pred: '16:05', real: '15:58', errMin: 7 },
+      { pred: '19:20', real: '19:31', errMin: 11 },
+      { pred: '23:45', real: '23:38', errMin: 7 },
+      { pred: '03:10', real: '03:29', errMin: 19 },
+      { pred: '07:25', real: '07:20', errMin: 5 },
+    ],
+    table2: [
+      { pred: '14:12', real: '14:03', errMin: 9 },
+      { pred: '18:05', real: '18:31', errMin: 26 },
+      { pred: '21:50', real: '21:42', errMin: 8 },
+      { pred: '02:15', real: '02:44', errMin: 29 },
+      { pred: '06:30', real: '06:19', errMin: 11 },
+      { pred: '10:12', real: '09:53', errMin: 19 },
+    ],
+  },
+};
+
+/* Badge de confiance continu (§3.6) — jamais un mur : dérivé du même n que le chiffre affiché */
+function tierBadge(n, emerging = 20, solid = 40) {
+  if (n < emerging) return { emoji: '🌱', text: `très approximatif (n=${n})` };
+  if (n < solid) return { emoji: '🧪', text: `encore incertain (n=${n})` };
+  return { emoji: '✅', text: `plus robuste (n=${n})` };
+}
+
+/* Carte « contexte » (§3.8, item 1) : compteurs purement informatifs, jamais des portes */
+function renderContext(s) {
+  const onsetN = s.onset ? s.onset.n : 0;
+  const durationN = s.duration ? s.duration.n : 0;
+  const b1 = tierBadge(onsetN), b2 = tierBadge(durationN);
+  const bt1 = tierBadge(s.quality1.backtestN), bt2 = tierBadge(s.quality2.backtestN);
+  return `
+    <div class="ctx-group">
+      <div class="ctx-group-title">Commun aux deux prédicteurs</div>
+      <div class="ctx-row"><span class="cr-label">Âge du bébé</span><span class="cr-val">${s.ageDays} j</span></div>
+      <div class="ctx-row"><span class="cr-label">Jours de sommeil suivis</span><span class="cr-val">${s.reliableDays} j</span></div>
+    </div>
+    <div class="ctx-group">
+      <div class="ctx-group-title">Prédicteur 1 — endormissement</div>
+      <div class="ctx-row"><span class="cr-label">Réveils récents mesurés</span><span class="cr-val">n=${onsetN} ${b1.emoji}</span></div>
+      <div class="ctx-row"><span class="cr-label">Backtests récents</span><span class="cr-val">n=${s.quality1.backtestN} ${bt1.emoji}</span></div>
+    </div>
+    <div class="ctx-group">
+      <div class="ctx-group-title">Prédicteur 2 — réveil</div>
+      <div class="ctx-row"><span class="cr-label">Sommeils récents mesurés</span><span class="cr-val">n=${durationN} ${b2.emoji}</span></div>
+      <div class="ctx-row"><span class="cr-label">Backtests récents</span><span class="cr-val">n=${s.quality2.backtestN} ${bt2.emoji}</span></div>
+    </div>`;
+}
+
+/* Bloc 🌙 endormissement : dernier réveil + médiane(écart d'éveil), en heure d'horloge.
+   Affiche un point dès n=1 (aucun seuil) ; une plage seulement dès n≥3 (WW_MIN_SAMPLES_FOR_RANGE, §3.2) —
+   plancher mathématique (P25/P75 de moins de 3 points ne seraient que les points bruts), pas un choix de prudence. */
+function renderOnsetBlock(s) {
+  if (!s.onset) {
+    return `<div class="est-empty">Aucun réveil mesuré encore pour ce bébé (n=0) — rien à estimer pour l'instant.</div>`;
+  }
+  const { median, p25, p75, n } = s.onset;
+  const b = tierBadge(n);
+  const base = addMin(s.lastWake, median);
+  const rangeHtml = (n >= 3 && p25 != null)
+    ? `<div class="est-range">Le plus souvent entre <b>${fmtClock(addMin(s.lastWake, p25))}</b> et <b>${fmtClock(addMin(s.lastWake, p75))}</b> (≈ ${median} min d'éveil).</div>`
+    : `<div class="est-range">≈ ${median} min d'éveil — une seule mesure, pas encore de plage possible (dès n=3).</div>`;
+  return `
+    <div class="est-hero">${fmtClock(base)} <small>endormissement</small> <span class="badge-chip">${b.emoji}</span></div>
+    ${rangeHtml}
+    <div class="est-n">${b.emoji} ${b.text} · basé sur ${n} réveil${n > 1 ? 's' : ''} récent${n > 1 ? 's' : ''} — expérimental, à prendre avec précaution.</div>`;
+}
+
+/* Bloc 🌅 réveil : chaîné endormissement + médiane(durée de sommeil) ; plage issue du round-trip
+   quand il y en a au moins un (§3.4), sinon repli temporaire explicitement étiqueté — jamais masquée,
+   même large (mention « ⚠️ plage large » accolée si SD_MAX_IQR_MEDIAN_RATIO est dépassé, §3.3/§0). */
+function renderWakeBlock(s) {
+  if (!s.duration) {
+    return `<div class="est-empty">Aucune durée de sommeil mesurée encore pour ce bébé (n=0) — rien à estimer pour l'instant.</div>`;
+  }
+  const wakeMin = s.onset.median + s.duration.median;
+  const wakePoint = addMin(s.lastWake, wakeMin);
+  const b = tierBadge(s.duration.n);
+  const rt = s.roundtrip;
+
+  let rangeHtml;
+  if (s.duration.n < 3 || s.duration.p25 == null) {
+    rangeHtml = `<div class="est-range">≈ ${fmtDur(s.duration.median)} de sommeil — une seule mesure, pas encore de plage possible (dès n=3).</div>`;
+  } else if (rt && rt.n >= 1) {
+    const rtBadge = tierBadge(rt.n);
+    const lo = addMin(s.lastWake, wakeMin - rt.p25Err), hi = addMin(s.lastWake, wakeMin + rt.p75Err);
+    const iqrRatio = (s.duration.p75 - s.duration.p25) / s.duration.median;
+    const wideNote = iqrRatio > SD_MAX_IQR_MEDIAN_RATIO
+      ? ` <b>⚠️ plage large</b> : à cet âge, la durée de sommeil mélange siestes courtes et nuits longues — prends ça comme un ordre de grandeur, pas une promesse.`
+      : '';
+    rangeHtml = `<div class="est-range">Le plus souvent entre <b>${fmtClock(lo)}</b> et <b>${fmtClock(hi)}</b> (≈ ${fmtDur(s.duration.median)} de sommeil). ${rtBadge.emoji} plage basée sur ${rt.n} round-trip${rt.n > 1 ? 's' : ''} mesuré${rt.n > 1 ? 's' : ''}.${wideNote}</div>`;
+  } else {
+    const oLo = s.onset.p25 ?? s.onset.median, oHi = s.onset.p75 ?? s.onset.median;
+    const dLo = s.duration.p25, dHi = s.duration.p75;
+    const lo = addMin(s.lastWake, oLo + dLo), hi = addMin(s.lastWake, oHi + dHi);
+    rangeHtml = `<div class="est-range">Environ entre <b>${fmtClock(lo)}</b> et <b>${fmtClock(hi)}</b> (≈ ${fmtDur(s.duration.median)} de sommeil) — <i>approximation grossière</i> (somme des deux plages, pas encore mesurée sur un vrai round-trip, 0 pour l'instant) : sera remplacée dès le premier round-trip observé.</div>`;
+  }
+  return `
+    <div class="est-hero">${fmtClock(wakePoint)} <small>réveil</small> <span class="badge-chip">${b.emoji}</span></div>
+    ${rangeHtml}
+    <div class="est-n">${b.emoji} ${b.text} · chaîné à partir de l'endormissement estimé — jamais une addition de deux plages pour le point central.</div>`;
+}
+
+/* Barres d'erreur de backtest (jour après jour), même esprit que statChartBars de l'app */
+function errorChart(values, W = 260, H = 62) {
+  if (!values.length) return '';
+  const max = Math.max(...values, 10);
+  const n = values.length, ML = 22, MT = 8, MB = 6;
+  const plotW = W - ML, plotH = H - MT - MB, base = MT + plotH;
+  const gap = n > 20 ? 1 : 2.4, bw = (plotW - gap * (n - 1)) / n, rx = Math.min(2.5, bw / 2);
+  let body = '';
+  [0, max].forEach(v => {
+    const gy = base - (v / max) * plotH;
+    body += `<line x1="${ML}" y1="${gy.toFixed(1)}" x2="${W}" y2="${gy.toFixed(1)}" stroke="${CHART.grid}" stroke-width="1"${v !== 0 ? ' stroke-dasharray="3 3"' : ''}/>`;
+    body += `<text x="${ML - 3}" y="${(gy + 3).toFixed(1)}" text-anchor="end" font-size="8" fill="${CHART.ink}">${v}</text>`;
+  });
+  values.forEach((v, i) => {
+    const x = ML + i * (bw + gap), h = Math.max(1.5, (v / max) * plotH);
+    body += `<rect x="${x.toFixed(1)}" y="${(base - h).toFixed(1)}" width="${bw.toFixed(1)}" height="${h.toFixed(1)}" rx="${rx}" fill="${CHART.biberon}"/>`;
+  });
+  return `<svg viewBox="0 0 ${W} ${H}" class="spark" preserveAspectRatio="xMidYMid meet" role="img" aria-hidden="true">${body}</svg>`;
+}
+
+function renderQualityInto(prefix, q) {
+  const hero = document.getElementById(prefix + 'Hero');
+  const sub = document.getElementById(prefix + 'Sub');
+  if (!q.backtestN) {
+    hero.textContent = '—';
+    sub.textContent = 'Aucun backtest encore (n=0).';
+    document.getElementById(prefix + 'Chart').innerHTML = '';
+    return;
+  }
+  const b = tierBadge(q.backtestN);
+  hero.textContent = `${q.medianErr} min d'écart médian ${b.emoji}`;
+  sub.textContent = `80 % des prédictions à ± ${q.p80Err} min · ${q.backtestN} backtest${q.backtestN > 1 ? 's' : ''} récent${q.backtestN > 1 ? 's' : ''} · ${b.text}`;
+  document.getElementById(prefix + 'Chart').innerHTML = errorChart(q.errors);
+}
+
+function renderTable(rows, label) {
+  if (!rows.length) {
+    return `<div class="pred-table-empty">Aucune prédiction backtestée encore (n=0).</div>`;
+  }
+  const trs = rows.map(r => {
+    const cls = r.errMin <= 15 ? 'err-ok' : 'err-mid';
+    return `<tr><td>Prédit ${r.pred}</td><td>${r.real}</td><td class="${cls}">± ${r.errMin} min</td></tr>`;
+  }).join('');
+  return `<table class="pred-table"><thead><tr><th>${label}</th><th>Réel</th><th>Écart</th></tr></thead><tbody>${trs}</tbody></table>`;
+}
+
+function renderState(key) {
+  const s = STATES[key];
+
+  document.getElementById('stateLabel').textContent = s.label;
+
+  document.getElementById('ctxList').innerHTML = renderContext(s);
+
+  document.getElementById('estOnset').innerHTML = renderOnsetBlock(s);
+  document.getElementById('estWake').innerHTML = renderWakeBlock(s);
+
+  renderQualityInto('q1', s.quality1);
+  renderQualityInto('q2', s.quality2);
+  document.getElementById('q2Note').textContent = s.duration
+    ? `Rappel : la durée de sommeil est plus dispersée que l'écart d'éveil à cet âge (siestes et nuits mélangées) — un écart plus grand ici est attendu, pas forcément un bug.`
+    : '';
+
+  document.getElementById('table1Block').innerHTML = renderTable(s.table1, 'Endormissement');
+  document.getElementById('table2Block').innerHTML = renderTable(s.table2, 'Réveil');
+}
+
+document.getElementById('stateSel').addEventListener('click', (e) => {
+  const btn = e.target.closest('.per-btn');
+  if (!btn) return;
+  document.querySelectorAll('#stateSel .per-btn').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  renderState(btn.dataset.state);
+});
+
+document.querySelector('.tabbar').addEventListener('click', (e) => {
+  const btn = e.target.closest('.tab');
+  if (!btn || btn.dataset.tab === 'prediction') return;
+  const toast = document.getElementById('toast');
+  toast.textContent = 'Mockup limité à l’onglet Prédiction';
+  toast.hidden = false;
+  toast.classList.add('show');
+  setTimeout(() => toast.classList.remove('show'), 1400);
+});
+
+renderState('j7');
+</script>
+</body>
+</html>

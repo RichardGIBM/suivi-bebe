@@ -792,3 +792,164 @@ body :is(input, textarea) { -webkit-user-select: text; user-select: text; }
   cursor: pointer;
 }
 .eb-btn:active { background: var(--surface-2); }
+
+/* ============================================================
+   Onglet PRÉDICTION (mode laboratoire)
+   Chaque chiffre est accompagné de son RECUL (badge + n) et,
+   séparément, de la PERFORMANCE de son backtest. Jamais de %.
+   ============================================================ */
+
+/* Bandeau expérimental permanent — même thème que .quality-box, non repliable */
+.pred-banner {
+  display: flex; align-items: flex-start; gap: 9px;
+  background: #fff8f2; border: 1px solid #f0d9c4; border-radius: var(--radius);
+  padding: 12px 14px; margin-bottom: 16px;
+}
+.pred-banner .pb-ic { font-size: 17px; line-height: 1.3; flex: 0 0 auto; }
+.pred-banner .pb-txt { font-size: 12.5px; color: #a35a2a; line-height: 1.4; }
+.pred-banner .pb-txt b { font-weight: 700; }
+
+/* Carte « Contexte » — compteurs purement informatifs, jamais des portes */
+.ctx-list { display: flex; flex-direction: column; gap: 4px; margin-top: 4px; }
+.ctx-group + .ctx-group { margin-top: 6px; padding-top: 10px; border-top: 1px dashed var(--line); }
+.ctx-group-title {
+  font-size: 10.5px; font-weight: 700; color: var(--text-soft);
+  text-transform: uppercase; letter-spacing: .03em; margin-bottom: 6px;
+}
+.ctx-row { display: flex; justify-content: space-between; align-items: baseline; padding: 2px 0; gap: 10px; }
+.ctx-row .cr-label { font-size: 12.5px; color: var(--text); }
+.ctx-row .cr-val { font-size: 12px; color: var(--text-soft); font-variant-numeric: tabular-nums; flex: 0 0 auto; text-align: right; }
+
+/* Estimation actuelle — ligne relative (rafraîchie chaque minute) + 2 blocs */
+.est-rel {
+  font-size: 13px; color: var(--text); line-height: 1.45;
+  background: var(--surface-2); border-radius: 12px;
+  padding: 9px 11px; margin: 2px 0 14px;
+}
+.est-split { display: flex; flex-wrap: wrap; gap: 18px; margin-top: 2px; }
+.est-block { flex: 1 1 220px; min-width: 0; }
+.est-block:not(:first-child) { border-top: 1px solid var(--line); padding-top: 12px; }
+.est-block-title { font-size: 12px; font-weight: 700; color: var(--text-soft); margin-bottom: 6px; }
+.est-hero { font-size: 24px; font-weight: 800; color: var(--text); font-variant-numeric: tabular-nums; }
+.est-hero small { font-size: 12px; font-weight: 600; color: var(--text-soft); margin-left: 4px; }
+.est-hero .badge-chip { font-size: 16px; margin-left: 2px; vertical-align: 2px; }
+.est-range { font-size: 12.5px; color: var(--text-soft); margin-top: 4px; line-height: 1.4; }
+.est-n { font-size: 11px; color: var(--text-soft); margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--line); line-height: 1.45; }
+.est-empty { font-size: 13px; color: var(--text-soft); padding: 6px 0; line-height: 1.5; }
+.sd-note { font-size: 11.5px; color: #a35a2a; margin-top: 10px; padding-top: 8px; border-top: 1px solid var(--line); line-height: 1.4; }
+
+/* Tableau « prédiction vs réalité » */
+.pred-table { width: 100%; border-collapse: collapse; margin-top: 4px; }
+.pred-table th, .pred-table td { padding: 8px 4px; font-size: 12.5px; text-align: right; font-variant-numeric: tabular-nums; border-top: 1px solid var(--line); }
+.pred-table th { font-size: 10.5px; color: var(--text-soft); font-weight: 600; border-top: none; padding-bottom: 6px; }
+.pred-table th:first-child, .pred-table td:first-child { text-align: left; }
+.pred-table td:first-child { color: var(--text-soft); }
+.pred-table td.err-ok { color: #4f7a3a; font-weight: 700; }
+.pred-table td.err-mid { color: #a35a2a; font-weight: 700; }
+.pred-table-empty { font-size: 13px; color: var(--text-soft); padding: 10px 0; text-align: center; }
+
+/* ============================================================
+   Laboratoire Champion / Challengers (§3.8 → §3.14)
+   Statuts, tables comparatives et suggestions in-app. Aucune couleur
+   ne code une « confiance » : le vert/orange ne signale qu'un gain
+   apparié positif/négatif, jamais une probabilité.
+   ============================================================ */
+.lab-sep { margin: 26px 0 12px; }
+.lab-sep .section-label { margin: 0 0 4px; }
+.lab-sep .view-sub { margin: 0; }
+
+/* Suggestions in-app — les seules alertes autorisées, confinées à l'onglet */
+.lab-sug {
+  display: flex; align-items: flex-start; gap: 9px;
+  background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius);
+  box-shadow: var(--shadow); padding: 12px 14px; margin-bottom: 10px;
+}
+.lab-sug-b { min-width: 0; }
+.lab-sug-t { font-size: 13.5px; font-weight: 700; color: var(--text); }
+.lab-sug-x { font-size: 12.5px; color: var(--text-soft); line-height: 1.45; margin-top: 3px; }
+.lab-sug-a { display: flex; flex-wrap: wrap; gap: 14px; margin-top: 8px; }
+
+.lab-link {
+  border: none; background: none; padding: 0;
+  font-size: 12.5px; font-weight: 700; color: #4a7fa8; cursor: pointer;
+}
+.lab-btn { width: 100%; margin-top: 12px; }
+
+/* En-tête de carte : le titre garde sa place, les sélecteurs passent dessous */
+.sc-head { flex-wrap: wrap; gap: 8px; }
+.lab-seg { font-size: 11px; }
+.lab-seg button { padding: 5px 9px; font-size: 11px; }
+.lab-select {
+  font-size: 11.5px; color: var(--text); background: var(--surface-2);
+  border: 1px solid var(--line); border-radius: 999px; padding: 5px 9px;
+}
+
+.lab-block + .lab-block { margin-top: 14px; padding-top: 12px; border-top: 1px dashed var(--line); }
+.lab-block-title { font-size: 12px; font-weight: 700; color: var(--text-soft); margin-bottom: 6px; }
+.lab-block-title small { font-weight: 500; color: var(--text-soft); margin-left: 4px; }
+
+/* Tables comparatives : défilement horizontal plutôt que colonnes écrasées */
+/* Tableaux de comparaison : trop de colonnes pour 375 px, donc défilement
+   horizontal. L'ombre de bord (technique background-attachment: local)
+   n'apparaît que du côté où il reste du contenu — sinon une colonne cachée
+   (« Statut », « Écart vs M0 ») passe inaperçue. */
+.lab-scroll {
+  overflow-x: auto; -webkit-overflow-scrolling: touch; margin: 0 -2px;
+  background:
+    linear-gradient(to right, var(--surface) 60%, rgba(255, 255, 255, 0)) left center,
+    linear-gradient(to left, var(--surface) 60%, rgba(255, 255, 255, 0)) right center,
+    radial-gradient(farthest-side at 0 50%, rgba(0, 0, 0, .14), rgba(0, 0, 0, 0)) left center,
+    radial-gradient(farthest-side at 100% 50%, rgba(0, 0, 0, .14), rgba(0, 0, 0, 0)) right center;
+  background-repeat: no-repeat;
+  background-size: 26px 100%, 26px 100%, 11px 100%, 11px 100%;
+  background-attachment: local, local, scroll, scroll;
+}
+.lab-table { min-width: 100%; }
+.lab-table th, .lab-table td { padding: 7px 5px; font-size: 12px; white-space: nowrap; }
+/* Une cellule qui couvre toute la largeur porte une phrase, pas un nombre : si
+   elle reste en nowrap, elle élargit la table et pousse les colonnes de droite
+   (« Écart vs M0 », « Statut ») hors de l'écran sur mobile. */
+.lab-table td[colspan] { white-space: normal; }
+.lab-table small { font-size: 10px; color: var(--text-soft); font-weight: 500; }
+.lab-table tr.lab-champ td { background: var(--surface-2); }
+.lab-table tr.lab-na td { color: var(--text-soft); font-style: italic; }
+.lab-table tr.lab-focus td:first-child { box-shadow: inset 2px 0 0 #80B4D7; }
+.lab-table tr.lab-feat td {
+  border-top: none; padding: 0 5px 8px; text-align: left;
+  font-size: 10.5px; color: var(--text-soft); white-space: normal;
+}
+.lab-cases td { vertical-align: top; }
+
+/* Pastille de statut du cycle de vie (§3.10) */
+.lab-chip {
+  display: inline-block; padding: 2px 7px; border-radius: 999px;
+  font-size: 10.5px; font-weight: 700; white-space: nowrap;
+  background: var(--surface-2); color: var(--text-soft);
+}
+.lab-active { background: #eaf3e4; color: #4f7a3a; }
+.lab-confirming { background: #e6eff6; color: #3f6a8c; }
+.lab-exploration { background: #f6efe6; color: #a35a2a; }
+.lab-rejected { background: #f6e6e6; color: #8c3f3f; }
+
+/* Expériences */
+.lab-exp + .lab-exp { margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--line); }
+.lab-exp-title { font-size: 13px; font-weight: 700; color: var(--text); }
+.lab-exp-title small { font-weight: 500; color: var(--text-soft); }
+.lab-exp-note { font-size: 11.5px; color: var(--text-soft); line-height: 1.4; margin-top: 3px; }
+.lab-exp-t { margin-top: 9px; padding-left: 10px; border-left: 2px solid var(--line); }
+.lab-exp-h { font-size: 12px; font-weight: 600; color: var(--text); }
+.lab-exp-h small { font-weight: 500; color: var(--text-soft); }
+.lab-exp-w { font-size: 11.5px; color: var(--text-soft); line-height: 1.4; margin-top: 2px; }
+.lab-prog { margin-top: 6px; }
+.lab-prog-bar { height: 5px; border-radius: 999px; background: var(--surface-2); overflow: hidden; }
+.lab-prog-bar span { display: block; height: 100%; background: #80B4D7; }
+.lab-prog-txt { font-size: 10.5px; color: var(--text-soft); margin-top: 3px; }
+
+/* Meilleur / pire cas d'un checkpoint */
+.lab-case { margin-top: 8px; }
+.lab-case-h { font-size: 12px; font-weight: 600; color: var(--text); }
+.lab-case-h small { font-weight: 500; color: var(--text-soft); }
+.lab-case-f { font-size: 10.5px; color: var(--text-soft); margin-top: 2px; line-height: 1.4; }
+
+.lab-sum { margin-top: 10px; box-shadow: none; border: 1px solid var(--line); }
+.lab-sum summary { font-size: 12.5px; padding: 9px 0; }
