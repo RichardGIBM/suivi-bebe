@@ -297,7 +297,6 @@ const ACTIONS = [
   { id: 'ventre',      name: 'Temps sur le ventre', emoji: '🤸', color: 'var(--c-ventre)',   place: 'checklist', short: 'Ventre' },
   { id: 'yeux',        name: 'Yeux',             emoji: '👁️', color: 'var(--c-soins)',       place: 'checklist' },
   { id: 'nez',         name: 'Nez',              emoji: '👃', color: 'var(--c-soins)',       place: 'checklist' },
-  { id: 'cordon',      name: 'Cordon',           emoji: '🩹', color: 'var(--c-soins)',       place: 'checklist' },
 ];
 const ACTION_MAP = Object.fromEntries(ACTIONS.map(a => [a.id, a]));
 const TILE_ACTIONS = ACTIONS.filter(a => a.place === 'tile');
@@ -629,9 +628,13 @@ function renderTimeline() {
   const listEl = document.getElementById('timeline');
   const friseEl = document.getElementById('timelineFrise');
   const count = document.getElementById('timelineCount');
-  // Le journal exclut les "appris" (qui ont leur propre section + onglet)
-  const events = Store.byDay(selectedDate).filter(e => e.action !== 'appris');
-  count.textContent = events.length ? `· ${events.length}` : '';
+  // Le journal exclut les "appris" (qui ont leur propre section + onglet).
+  // On y ajoute, pour affichage uniquement, les sommeils commencés la veille et
+  // qui débordent sur ce jour (marqués _cont) — sans doublon en base ni en stats.
+  const events = journalDisplayEvents(selectedDate);
+  // Le compteur ne compte que les actions réellement enregistrées ce jour (hors continuation)
+  const n = events.filter(e => !e._cont).length;
+  count.textContent = n ? `· ${n}` : '';
   document.querySelectorAll('#journalSeg button')
     .forEach(b => b.classList.toggle('active', b.dataset.view === journalView));
   hideJournalPop();
@@ -642,6 +645,24 @@ function renderTimeline() {
     friseEl.hidden = true; listEl.hidden = false;
     renderJournalList(listEl, events);
   }
+}
+
+/* Événements à AFFICHER dans le journal d'un jour :
+   - ceux enregistrés ce jour (byDay), hors "appris" ;
+   - + les sommeils commencés un jour précédent mais terminés après minuit ce
+     jour-là (continuation), marqués _cont pour un rendu « commencé la veille ».
+   La base n'est pas modifiée : aucun doublon de données ni de comptage stats. */
+function journalDisplayEvents(date) {
+  const base = Store.byDay(date).filter(e => e.action !== 'appris');
+  const dayStart = startOfDay(date).getTime();
+  const conts = Store.all().filter(e => {
+    if (e.action !== 'sommeil') return false;
+    const st = new Date(e.ts).getTime();
+    if (st >= dayStart) return false;                 // commence ce jour ou après → déjà dans base
+    const end = (e.data && e.data.end) ? new Date(e.data.end).getTime() : null;
+    return end != null && end > dayStart;             // se termine après minuit → déborde sur ce jour
+  }).map(e => ({ ...e, _cont: true }));
+  return base.concat(conts);
 }
 
 /* Vue LISTE (comportement historique : tap → édition complète). */
@@ -656,16 +677,21 @@ function renderJournalList(list, events) {
   }
   events.forEach(ev => {
     const a = ACTION_MAP[ev.action] || { name: ev.action, emoji: '•', color: 'var(--line)' };
-    const detail = describe(ev);
+    let name = a.name, detail = describe(ev), time = hhmm(ev.ts);
+    if (ev._cont && ev.data && ev.data.end) {          // sommeil commencé la veille, terminé ce jour
+      name = `${a.name} · commencé la veille`;
+      detail = `${hhmm(ev.ts)} → ${hhmm(ev.data.end)} · ${fmtDuration(durMin(ev.ts, ev.data.end))}`;
+      time = hhmm(ev.data.end);
+    }
     const li = document.createElement('li');
-    li.className = 'event';
+    li.className = 'event' + (ev._cont ? ' cont' : '');
     li.innerHTML = `
       <div class="ev-dot" style="background:${a.color}33">${a.emoji}</div>
       <div class="ev-main">
-        <div class="ev-name">${a.name}</div>
+        <div class="ev-name">${escapeHtml(name)}</div>
         ${detail ? `<div class="ev-detail">${escapeHtml(detail)}</div>` : ''}
       </div>
-      <div class="ev-time">${hhmm(ev.ts)}</div>`;
+      <div class="ev-time">${time}</div>`;
     li.addEventListener('click', () => openEditSheet(ev));
     list.appendChild(li);
   });
@@ -701,7 +727,7 @@ function renderJournalBand(band, events, { isToday, nowMin }) {
   const wrap = document.createElement('div');
   wrap.className = 'tl-band';
 
-  // Axe : graduations toutes les 2 h (suffixe "h") ; ☀️ discret l'après-midi
+  // Axe : graduations toutes les 2 h (suffixe "h")
   const axis = document.createElement('div');
   axis.className = 'tl-axis';
   let ax = '';
@@ -709,7 +735,6 @@ function renderJournalBand(band, events, { isToday, nowMin }) {
     const cls = h === band.startH ? 'start' : (h === band.endH ? 'end' : '');
     ax += `<div class="tl-tick ${cls}" style="left:${p(h * 60)}%">${h}h</div>`;
   }
-  if (band.startH !== 0) ax += `<div class="tl-glyph" style="left:${p(13 * 60)}%">☀️</div>`;
   axis.innerHTML = ax;
   wrap.appendChild(axis);
 
@@ -744,19 +769,28 @@ function renderJournalBand(band, events, { isToday, nowMin }) {
       const start = mn(ev.ts);
       if (ev.action === 'sommeil') {
         const ongoing = !(ev.data && ev.data.end);
+        // start/end en minutes depuis minuit du jour affiché : négatif = commencé la veille,
+        // > 1440 = se poursuit le lendemain (mn() borne proprement à l'affichage)
         const end = ongoing ? (isToday ? nowMin : start) : mn(ev.data.end);
         const s = Math.max(start, startMin), e = Math.min(end, endMin);
         if (e <= s) return;                     // épisode hors de cette bande
         const w = e - s;
+        const contPrev = start < 0;             // a commencé la veille
+        const contNext = end > 1440;            // se poursuit le lendemain
         const bar = document.createElement('div');
-        bar.className = 'tl-bar' + (ongoing ? ' ongoing' : '');
+        bar.className = 'tl-bar'
+          + (ongoing ? ' ongoing' : '')
+          + (contPrev ? ' cont-prev' : '')
+          + (contNext ? ' cont-next' : '');
         bar.style.cssText = `--c:${a.color}; left:${p(s)}%; width:${(w / len) * 100}%`;
-        // libellé (durée totale) affiché dès que le sommeil dépasse 1h ;
-        // si l'épisode chevauche les deux bandes, il s'affiche dans celle qui en contient la plus grande part
+        // libellé = durée totale (même à cheval sur minuit) affiché dès > 1h, une seule fois,
+        // dans la bande qui contient la plus grande part VISIBLE du sommeil
+        const w1 = Math.max(0, Math.min(end, 720)  - Math.max(start, 0));
+        const w2 = Math.max(0, Math.min(end, 1440) - Math.max(start, 720));
+        const otherW = band.startH === 0 ? w2 : w1;
         const totalMin = end - start;
-        if (totalMin > 60 && w * 2 >= totalMin) {
-          bar.innerHTML = `<span class="lbl">${fmtDuration(totalMin)}</span>`;
-        }
+        const showHere = totalMin > 60 && w > 0 && (w > otherW || (w === otherW && band.startH === 0));
+        if (showHere) bar.innerHTML = `<span class="lbl">${fmtDuration(totalMin)}</span>`;
         bar.addEventListener('click', (evt) => { evt.stopPropagation(); showJournalPop(ev, bar); });
         track.appendChild(bar);
       } else {
@@ -778,8 +812,9 @@ function renderJournalBand(band, events, { isToday, nowMin }) {
   return wrap;
 }
 
-/* ---------- Popover d'info de la frise (lecture seule) ---------- */
+/* ---------- Popover d'info de la frise (tap → info, re-tap → édition) ---------- */
 let journalPopAnchor = null;
+let journalPopEvent = null;
 function popTime(ev) {
   if (ev.action === 'sommeil') {
     return (ev.data && ev.data.end) ? `${hhmm(ev.ts)} → ${hhmm(ev.data.end)}` : `depuis ${hhmm(ev.ts)}`;
@@ -802,10 +837,12 @@ function hideJournalPop() {
   const pop = document.getElementById('journalPop');
   if (!pop) return;
   pop.style.display = 'none';
+  journalPopEvent = null;
   if (journalPopAnchor) { journalPopAnchor.classList.remove('selected'); journalPopAnchor = null; }
 }
 function showJournalPop(ev, anchor) {
   const pop = document.getElementById('journalPop');
+  journalPopEvent = ev;
   const a = ACTION_MAP[ev.action] || { name: ev.action, emoji: '•', color: 'var(--line)' };
   const detail = popDetail(ev);
   pop.querySelector('.pop-body').innerHTML = `
@@ -1682,6 +1719,12 @@ document.getElementById('journalSeg').addEventListener('click', (e) => {
   journalView = b.dataset.view === 'timeline' ? 'timeline' : 'list';
   localStorage.setItem('suivi-bebe-journal-view', journalView);
   renderTimeline();
+});
+// Tap sur le popover lui-même → ouvre l'édition de l'événement ancré
+document.getElementById('journalPop').addEventListener('click', (e) => {
+  e.stopPropagation();
+  const ev = journalPopEvent;
+  if (ev) { hideJournalPop(); openEditSheet(ev); }
 });
 // Le popover de la frise se ferme au clic ailleurs et au scroll (position fixe)
 document.addEventListener('click', hideJournalPop);

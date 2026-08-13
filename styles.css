@@ -29,7 +29,7 @@
   /* Frise du journal */
   --tl-lane-h: 42px;
   --tl-pin: 24px;
-  --tl-night: rgba(128, 180, 215, 0.10);
+  --tl-night: rgba(128, 180, 215, 0.20);
   --tl-grid: #eef0f3;
   --tl-now: #2a4a6b;
 }
@@ -252,7 +252,6 @@ body :is(input, textarea) { -webkit-user-select: text; user-select: text; }
 .tl-tick { position: absolute; top: 0; transform: translateX(-50%); font-size: 10.5px; color: var(--text-soft); font-variant-numeric: tabular-nums; white-space: nowrap; }
 .tl-tick.start { transform: translateX(0); }
 .tl-tick.end { transform: translateX(-100%); }
-.tl-glyph { position: absolute; top: -1px; transform: translateX(-50%); font-size: 12px; opacity: .55; }
 
 .tl-body { position: relative; }
 .tl-overlay { position: absolute; inset: 0; pointer-events: none; }
@@ -292,9 +291,18 @@ body :is(input, textarea) { -webkit-user-select: text; user-select: text; }
 .tl-bar .lbl { font-size: 10px; font-weight: 700; color: color-mix(in srgb, var(--c) 70%, #333); white-space: nowrap; padding: 0 4px; }
 .tl-bar.ongoing { border-style: dashed; background: repeating-linear-gradient(90deg, color-mix(in srgb, var(--c) 22%, #fff) 0 6px, color-mix(in srgb, var(--c) 10%, #fff) 6px 12px); }
 .tl-pin.selected, .tl-bar.selected { box-shadow: 0 0 0 3px color-mix(in srgb, var(--c) 35%, #fff); }
+/* Sommeil à cheval sur minuit : bord franc côté qui déborde + chevron vers l'extérieur */
+.tl-bar.cont-prev { border-top-left-radius: 0; border-bottom-left-radius: 0; border-left-color: transparent; }
+.tl-bar.cont-next { border-top-right-radius: 0; border-bottom-right-radius: 0; border-right-color: transparent; }
+.tl-bar.cont-prev::before, .tl-bar.cont-next::after {
+  content: ''; position: absolute; top: 50%; width: 5px; height: 5px;
+  border-top: 2px solid var(--c); border-right: 2px solid var(--c);
+}
+.tl-bar.cont-prev::before { left: 1px; transform: translateY(-50%) rotate(-135deg); }
+.tl-bar.cont-next::after  { right: 1px; transform: translateY(-50%) rotate(45deg); }
 
 /* Popover d'info (lecture seule) ancré à la marque */
-.pop { position: fixed; z-index: 60; display: none; background: var(--surface); border: 1px solid var(--line); box-shadow: var(--shadow); border-radius: 14px; padding: 9px 12px; max-width: 240px; }
+.pop { position: fixed; z-index: 60; display: none; background: var(--surface); border: 1px solid var(--line); box-shadow: var(--shadow); border-radius: 14px; padding: 9px 12px; max-width: 240px; cursor: pointer; }
 .pop-row { display: flex; align-items: center; gap: 9px; }
 .pop-ic { width: 30px; height: 30px; border-radius: 9px; display: grid; place-items: center; font-size: 16px; border: 1.5px solid; flex: 0 0 auto; }
 .pop-txt { display: flex; flex-direction: column; line-height: 1.2; }
