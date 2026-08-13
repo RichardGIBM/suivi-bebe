@@ -11,7 +11,13 @@
    Règles clefs :
    - Jour = jour civil LOCAL (minuit→minuit du téléphone).
    - Sommeil à cheval sur minuit : DÉCOUPÉ à minuit (minutes réellement
-     dormies DANS chaque jour).
+     dormies DANS chaque jour) → cf. sleepSegments(). Un 22h30→02h compte
+     1h30 le 1er jour et 2h le 2e, et vaut 1 dodo de chaque côté (impossible
+     autrement sans fausser les totaux quotidiens).
+   - Exception assumée : "plus long sommeil" garde le sens de plus longue
+     traite SANS RÉVEIL → durée de l'épisode ENTIER, rattachée au jour qui en
+     contient le plus de minutes (à égalité : le jour de début). Sur ce jour,
+     longestSleepMin peut donc dépasser sleepMin.
    - Dodo en cours (end=null) : compté jusqu'à maintenant si démarré il y a
      < 16 h ; sinon exclu et signalé (qualité des données).
    - Aujourd'hui = jour partiel : EXCLU des moyennes.
@@ -68,6 +74,37 @@ const Stats = {
       return { startMs, endMs: nowMs, valid: true, ongoing: true, rawEndMs: nowMs };
     }
     return null; // dodo oublié (>16h) : ignoré ici, signalé en qualité
+  },
+
+  /* ---------- Découpe d'un sommeil en segments de jour civil ----------
+     SOURCE UNIQUE de la règle "à cheval sur minuit" : stats ET affichage
+     (journal, frise, badges) consomment cette fonction, jamais la durée brute.
+     Renvoie, du plus ancien au plus récent :
+       [{ dayMs, startMs, endMs, min, contPrev, contNext, ongoing, totalMin }]
+     - min      : minutes dormies DANS ce jour (ce que le jour comptabilise) ;
+     - totalMin : durée de l'épisode entier (pour "plus long sommeil") ;
+     - contPrev/contNext : le segment est tronqué à minuit avant/après.
+     [] si l'épisode est à ignorer (dodo oublié > 16 h, durée nulle/négative). */
+  sleepSegments(ev, nowMs) {
+    const s = this._resolveSleep(ev, nowMs != null ? nowMs : Date.now());
+    if (!s || !s.valid) return [];
+    const totalMin = Math.round((s.endMs - s.startMs) / 60000);
+    const out = [];
+    let cur = this.startOfDay(new Date(s.startMs));
+    // garde-fou : un épisode aberrant (date corrompue) ne doit pas boucler
+    for (let i = 0; i < 32 && cur.getTime() < s.endMs; i++) {
+      const dS = cur.getTime(), dE = this.addDays(cur, 1).getTime();
+      const a = Math.max(dS, s.startMs), b = Math.min(dE, s.endMs);
+      if (b > a) out.push({
+        dayMs: dS, startMs: a, endMs: b,
+        min: Math.round((b - a) / 60000),
+        contPrev: a > s.startMs, contNext: b < s.endMs,
+        ongoing: s.ongoing && b >= s.endMs,
+        totalMin,
+      });
+      cur = this.addDays(cur, 1);
+    }
+    return out;
   },
 
   /* ---------- Agrégat par jour + période ----------
@@ -159,20 +196,18 @@ const Stats = {
         const endMs = new Date(e.data.end).getTime();
         if (Number.isFinite(endMs) && Number.isFinite(startMs) && endMs < startMs) quality.dureesNegatives.push(e.id);
       }
-      const s = this._resolveSleep(e, nowMs);
-      if (!s || !s.valid) continue;
-      // Nombre de dodos + plus long épisode : rattachés au jour de DÉBUT
-      const startDay = byKey.get(this.dayKey(new Date(s.startMs)));
-      const epMin = Math.round((s.endMs - s.startMs) / 60000);
-      if (startDay) { startDay.naps += 1; if (epMin > startDay.longestSleepMin) startDay.longestSleepMin = epMin; }
-      // Total /jour : découpe à minuit sur chaque jour de la fenêtre chevauché
-      if (s.endMs <= firstMs || s.startMs >= lastMs) continue; // hors fenêtre
-      for (const d of days) {
-        const dS = d.date.getTime();
-        const dE = this.addDays(d.date, 1).getTime();
-        const ov = this._overlapMin(s.startMs, s.endMs, dS, dE);
-        if (ov > 0) d.sleepMin += ov;
+      // Découpe à minuit : chaque jour chevauché encaisse SES minutes + 1 dodo.
+      const segs = this.sleepSegments(e, nowMs);
+      if (!segs.length) continue;
+      let best = segs[0];
+      for (const g of segs) {
+        const d = byKey.get(this.dayKey(new Date(g.dayMs)));   // undefined = hors fenêtre
+        if (d) { d.sleepMin += g.min; d.naps += 1; }
+        if (g.min > best.min) best = g;                        // ">" ⇒ à égalité, le jour de début
       }
+      // Plus long sommeil = épisode ENTIER (traite sans réveil), sur le jour majoritaire.
+      const bestDay = byKey.get(this.dayKey(new Date(best.dayMs)));
+      if (bestDay && best.totalMin > bestDay.longestSleepMin) bestDay.longestSleepMin = best.totalMin;
     }
 
     // --- Autres événements de la fenêtre ---

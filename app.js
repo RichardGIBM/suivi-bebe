@@ -598,15 +598,12 @@ function tileStat(id) {
     return lines([`💧 ${pipi}`, `💩 ${caca}`]);
   }
   if (id === 'sommeil') {
-    const isToday = isSameDay(selectedDate, startOfDay(new Date()));
-    let total = 0, n = 0;
-    evs('sommeil').forEach(e => {
-      if (e.data && e.data.end) { total += durMin(e.ts, e.data.end); n++; }
-      else if (isToday && (Date.now() - new Date(e.ts).getTime()) < SLEEP_MAX_MS) {
-        total += durMin(e.ts, new Date()); n++;         // dodo en cours
-      }
-    });
-    return n ? lines([n, fmtDuration(total)]) : '';
+    // Découpe à minuit (Stats.sleepSegments) : un 22h30→02h compte 1h30 la veille
+    // et 2h le lendemain, jamais 3h30 d'un seul côté.
+    const segs = daySleepEntries(selectedDate).filter(e => e._seg);
+    if (!segs.length) return '';
+    const total = segs.reduce((s, e) => s + e._seg.min, 0);
+    return lines([segs.length, fmtDuration(total)]);
   }
   return '';
 }
@@ -628,12 +625,10 @@ function renderTimeline() {
   const listEl = document.getElementById('timeline');
   const friseEl = document.getElementById('timelineFrise');
   const count = document.getElementById('timelineCount');
-  // Le journal exclut les "appris" (qui ont leur propre section + onglet).
-  // On y ajoute, pour affichage uniquement, les sommeils commencés la veille et
-  // qui débordent sur ce jour (marqués _cont) — sans doublon en base ni en stats.
+  // Le journal exclut les "appris" (qui ont leur propre section + onglet) et
+  // découpe les sommeils à minuit (cf. journalDisplayEvents).
   const events = journalDisplayEvents(selectedDate);
-  // Le compteur ne compte que les actions réellement enregistrées ce jour (hors continuation)
-  const n = events.filter(e => !e._cont).length;
+  const n = events.length;
   count.textContent = n ? `· ${n}` : '';
   document.querySelectorAll('#journalSeg button')
     .forEach(b => b.classList.toggle('active', b.dataset.view === journalView));
@@ -647,22 +642,40 @@ function renderTimeline() {
   }
 }
 
-/* Événements à AFFICHER dans le journal d'un jour :
-   - ceux enregistrés ce jour (byDay), hors "appris" ;
-   - + les sommeils commencés un jour précédent mais terminés après minuit ce
-     jour-là (continuation), marqués _cont pour un rendu « commencé la veille ».
-   La base n'est pas modifiée : aucun doublon de données ni de comptage stats. */
+/* Sommeils comptabilisés sur un jour donné, découpés à minuit (source unique
+   pour le journal ET le badge de la tuile). Renvoie des COPIES de l'événement
+   portant `_seg` = le segment de CE jour : l'id reste celui de l'épisode
+   d'origine → l'édition modifie bien l'épisode entier, et la base ne contient
+   toujours qu'un seul enregistrement (aucun doublon de données).
+   Un 22h30→02h donne donc 1h30 la veille et 2h le lendemain.
+   `_seg: null` = dodo non fermé/oublié : gardé visible le jour de sa saisie
+   pour qu'on puisse le corriger, mais exclu des totaux. */
+function daySleepEntries(date) {
+  const dayMs = startOfDay(date).getTime();
+  const nowMs = Date.now();
+  const out = [];
+  Store.all().forEach(e => {
+    if (e.action !== 'sommeil') return;
+    const segs = Stats.sleepSegments(e, nowMs);
+    if (!segs.length) {
+      if (ymd(new Date(e.ts)) === ymd(date)) out.push({ ...e, _seg: null });
+      return;
+    }
+    const g = segs.find(x => x.dayMs === dayMs);
+    if (g) out.push({ ...e, _seg: g });
+  });
+  return out;
+}
+
+/* Événements à AFFICHER dans le journal d'un jour : tout ce qui a été
+   enregistré ce jour (hors "appris", qui a sa propre section) + les segments de
+   sommeil du jour. Tri chronologique décroissant sur l'heure affichée. */
 function journalDisplayEvents(date) {
-  const base = Store.byDay(date).filter(e => e.action !== 'appris');
-  const dayStart = startOfDay(date).getTime();
-  const conts = Store.all().filter(e => {
-    if (e.action !== 'sommeil') return false;
-    const st = new Date(e.ts).getTime();
-    if (st >= dayStart) return false;                 // commence ce jour ou après → déjà dans base
-    const end = (e.data && e.data.end) ? new Date(e.data.end).getTime() : null;
-    return end != null && end > dayStart;             // se termine après minuit → déborde sur ce jour
-  }).map(e => ({ ...e, _cont: true }));
-  return base.concat(conts);
+  const out = Store.byDay(date)
+    .filter(e => e.action !== 'appris' && e.action !== 'sommeil')
+    .concat(daySleepEntries(date));
+  const key = e => (e._seg ? e._seg.startMs : new Date(e.ts).getTime());
+  return out.sort((a, b) => key(b) - key(a));
 }
 
 /* Vue LISTE (comportement historique : tap → édition complète). */
@@ -678,13 +691,26 @@ function renderJournalList(list, events) {
   events.forEach(ev => {
     const a = ACTION_MAP[ev.action] || { name: ev.action, emoji: '•', color: 'var(--line)' };
     let name = a.name, detail = describe(ev), time = hhmm(ev.ts);
-    if (ev._cont && ev.data && ev.data.end) {          // sommeil commencé la veille, terminé ce jour
-      name = `${a.name} · commencé la veille`;
-      detail = `${hhmm(ev.ts)} → ${hhmm(ev.data.end)} · ${fmtDuration(durMin(ev.ts, ev.data.end))}`;
-      time = hhmm(ev.data.end);
+    const g = ev.action === 'sommeil' ? ev._seg : null;
+    if (g) {
+      // Le libellé décrit le SEGMENT du jour (la durée que ce jour comptabilise),
+      // et rappelle la durée de l'épisode entier quand il est à cheval sur minuit.
+      const parts = [];
+      if (g.contPrev) parts.push('commencé la veille');
+      if (g.contNext) parts.push('continue le lendemain');
+      name = parts.length ? `${a.name} · ${parts.join(' · ')}` : a.name;
+      if (g.ongoing) {
+        detail = `depuis ${hhmm(ev.ts)} · ${fmtDuration(g.min)}${g.contPrev ? ' ce jour' : ''} · en cours`;
+      } else {
+        // l'heure de début est déjà dans la colonne de droite → on ne la répète que
+        // pour un segment venu de la veille (où la colonne porte l'heure de réveil)
+        detail = (g.contPrev ? `${hhmm(g.startMs)} → ` : '→ ') + `${hhmm(g.endMs)} · ${fmtDuration(g.min)}`;
+        if (g.contPrev || g.contNext) detail += ` · nuit de ${fmtDuration(g.totalMin)}`;
+        time = g.contPrev ? hhmm(g.endMs) : hhmm(g.startMs);
+      }
     }
     const li = document.createElement('li');
-    li.className = 'event' + (ev._cont ? ' cont' : '');
+    li.className = 'event' + (g && g.contPrev ? ' cont' : '');
     li.innerHTML = `
       <div class="ev-dot" style="background:${a.color}33">${a.emoji}</div>
       <div class="ev-main">
@@ -768,29 +794,26 @@ function renderJournalBand(band, events, { isToday, nowMin }) {
       if (!a) return;
       const start = mn(ev.ts);
       if (ev.action === 'sommeil') {
-        const ongoing = !(ev.data && ev.data.end);
-        // start/end en minutes depuis minuit du jour affiché : négatif = commencé la veille,
-        // > 1440 = se poursuit le lendemain (mn() borne proprement à l'affichage)
-        const end = ongoing ? (isToday ? nowMin : start) : mn(ev.data.end);
-        const s = Math.max(start, startMin), e = Math.min(end, endMin);
-        if (e <= s) return;                     // épisode hors de cette bande
+        const g = ev._seg;
+        if (!g) return;                         // dodo oublié/non fermé : rien à tracer
+        // Le segment est déjà borné au jour affiché → start ∈ [0,1440], end ∈ [0,1440].
+        const segStart = mn(g.startMs), end = mn(g.endMs);
+        const s = Math.max(segStart, startMin), e = Math.min(end, endMin);
+        if (e <= s) return;                     // segment hors de cette bande
         const w = e - s;
-        const contPrev = start < 0;             // a commencé la veille
-        const contNext = end > 1440;            // se poursuit le lendemain
         const bar = document.createElement('div');
         bar.className = 'tl-bar'
-          + (ongoing ? ' ongoing' : '')
-          + (contPrev ? ' cont-prev' : '')
-          + (contNext ? ' cont-next' : '');
+          + (g.ongoing ? ' ongoing' : '')
+          + (g.contPrev ? ' cont-prev' : '')   // tronqué à minuit : vient de la veille
+          + (g.contNext ? ' cont-next' : '');  // tronqué à minuit : continue demain
         bar.style.cssText = `--c:${a.color}; left:${p(s)}%; width:${(w / len) * 100}%`;
-        // libellé = durée totale (même à cheval sur minuit) affiché dès > 1h, une seule fois,
-        // dans la bande qui contient la plus grande part VISIBLE du sommeil
-        const w1 = Math.max(0, Math.min(end, 720)  - Math.max(start, 0));
-        const w2 = Math.max(0, Math.min(end, 1440) - Math.max(start, 720));
+        // libellé = durée du SEGMENT (ce que ce jour comptabilise) dès > 1h, une seule
+        // fois, dans la bande qui en contient la plus grande part
+        const w1 = Math.max(0, Math.min(end, 720)  - Math.max(segStart, 0));
+        const w2 = Math.max(0, Math.min(end, 1440) - Math.max(segStart, 720));
         const otherW = band.startH === 0 ? w2 : w1;
-        const totalMin = end - start;
-        const showHere = totalMin > 60 && w > 0 && (w > otherW || (w === otherW && band.startH === 0));
-        if (showHere) bar.innerHTML = `<span class="lbl">${fmtDuration(totalMin)}</span>`;
+        const showHere = g.min > 60 && w > 0 && (w > otherW || (w === otherW && band.startH === 0));
+        if (showHere) bar.innerHTML = `<span class="lbl">${fmtDuration(g.min)}</span>`;
         bar.addEventListener('click', (evt) => { evt.stopPropagation(); showJournalPop(ev, bar); });
         track.appendChild(bar);
       } else {
@@ -817,7 +840,9 @@ let journalPopAnchor = null;
 let journalPopEvent = null;
 function popTime(ev) {
   if (ev.action === 'sommeil') {
-    return (ev.data && ev.data.end) ? `${hhmm(ev.ts)} → ${hhmm(ev.data.end)}` : `depuis ${hhmm(ev.ts)}`;
+    const g = ev._seg;                                   // bornes du segment de ce jour
+    if (g && !g.ongoing) return `${hhmm(g.startMs)} → ${hhmm(g.endMs)}`;
+    return `depuis ${hhmm(ev.ts)}`;
   }
   return hhmm(ev.ts);
 }
@@ -829,7 +854,14 @@ function popDetail(ev) {
     case 'couche':      return d.type ? capitalize(d.type) : '';
     case 'temperature': return d.temp != null ? `${fmtTemp(d.temp)} °C` : '';
     case 'medicament':  return d.name || '';
-    case 'sommeil':     return d.end ? `Durée ${fmtDuration(durMin(ev.ts, d.end))}` : 'En cours…';
+    case 'sommeil': {
+      const g = ev._seg;
+      if (!g) return 'En cours…';
+      const split = g.contPrev || g.contNext;
+      return `Durée ${fmtDuration(g.min)}`
+        + (split ? ` · nuit de ${fmtDuration(g.totalMin)}` : '')
+        + (g.ongoing ? ' · en cours' : '');
+    }
     default:            return '';
   }
 }
