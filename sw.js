@@ -1,14 +1,14 @@
 // Service worker — Suivi Bébé (PWA offline)
 // Bump CACHE à chaque mise à jour d'asset (aligné sur ?v=N).
-const CACHE = 'suivi-bebe-v27';
+const CACHE = 'suivi-bebe-v28';
 
 const ASSETS = [
   '.',
   'index.html',
   'styles.css?v=26',
-  'app.js?v=27',
+  'app.js?v=28',
   'config.js?v=15',
-  'stats.js?v=27',
+  'stats.js?v=28',
   'vendor/supabase.js',
   'manifest.webmanifest',
   'icons/icon-192.png',

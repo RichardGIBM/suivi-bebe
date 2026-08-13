@@ -4,7 +4,9 @@
 > avec des indicateurs **simples mais utiles**, une **précision sans faille**, et une
 > **exhaustivité des données** exportables pour analyse/prédiction par une IA.
 >
-> Statut : **spec (à valider)** — rien n'est encore codé.
+> Statut : **implémenté** (`stats.js`, onglet 📊). Spec vivante : elle décrit le code
+> livré, et chaque règle ci-dessous est **verrouillée par un test** (`node tests/run.js`,
+> voir §J). Toute modification de règle se fait ici **et** dans les tests, ensemble.
 
 ---
 
@@ -38,11 +40,22 @@ double source de vérité, donc pas de dérive.
    1h30 la veille et 6h15 le lendemain. C'est la **seule** façon correcte d'obtenir
    « heures de sommeil par jour ». (Le *nombre* de dodos et la *plus longue période*
    se calculent sur l'épisode entier, voir §C.)
-3. **Dodo en cours** (`end:null`) :
-   - jour courant : compté jusqu'à **maintenant** (borné), uniquement si démarré il y
-     a < 16 h (constante `SLEEP_MAX_MS` existante) ;
-   - jour passé avec un dodo jamais fermé > 16 h : **exclu** des totaux et **signalé**
-     comme anomalie de données (voir §E).
+   **Invariant d'arrondi** : la somme des minutes des segments d'un épisode est
+   toujours égale à la durée de l'épisode (`totalMin`) — on répartit, on ne
+   ré-arrondit pas chaque morceau indépendamment.
+3. **Épisodes de sommeil douteux.** La borne de plausibilité est unique : 16 h
+   (`SLEEP_MAX_MS`), en cours **comme** clos.
+   - **en cours** (`end:null`) démarré il y a < 16 h : compté jusqu'à **maintenant** ;
+   - **en cours** depuis > 16 h (oubli de « fin ») : **exclu** des totaux et **signalé** (§E) ;
+   - **clos** de durée ≥ 16 h (oubli fermé le lendemain) : **compté quand même** et
+     **signalé** (§E). Les stats restent le reflet exact du journal ; c'est la
+     correction de la saisie qui corrige la stat, pas un filtre invisible ;
+   - **qui se chevauchent** (même sieste saisie depuis les 2 téléphones) : minutes
+     **additionnées** (idem) et le plus tardif **signalé** (§E). Une journée peut donc
+     dépasser 1440 min tant que le doublon n'est pas supprimé.
+   > Conséquence pour le **prédictif** : c'est à lui d'écarter les épisodes marqués
+   > `aberrant` ou `overlapsPrev` par `Stats.sleepEpisodes()` — les stats descriptives,
+   > elles, ne mentent pas sur ce qui est saisi.
 4. **Aujourd'hui est un jour partiel.** Les **moyennes /jour** se calculent sur les
    **N jours complets précédents** (aujourd'hui exclu). Aujourd'hui est affiché à part
    (« aujourd'hui, à cette heure »), jamais mélangé à la moyenne.
@@ -119,15 +132,20 @@ partage sein vs biberon dans le temps**.
 | # | KPI | Définition exacte | Edge cases |
 |---|---|---|---|
 | C1 | **Sommeil total / 24h** | Σ des minutes dormies **dans** le jour (découpe à minuit, §règle 2) | dodo en cours borné à maintenant |
-| C2 | **Plus longue période** | durée du plus long **épisode** (non découpé) rattaché au jour de son **début** | la « nuit » ; borne 16 h |
-| C3 | **Nombre de dodos / 24h** | nombre d'épisodes **démarrés** ce jour | — |
+| C2 | **Plus longue période** | durée de l'épisode **entier** (non découpé), rattachée au jour qui en contient **le plus de minutes** — à égalité, le jour de **début** | la « nuit » de 22h30→06h15 s'affiche 7h45 sur le lendemain, pas 1h30 la veille |
+| C3 | **Nombre de dodos / 24h** | nombre de **segments** du jour : un épisode à cheval compte **1 dodo de chaque côté** de minuit | cohérent avec C1 (mêmes segments) |
 
 > ~~C4 jour vs nuit~~ : **écarté** (pas besoin — décision 2026-08-11).
 
-- **Cohérence C1/C2/C3** : C1 est un total découpé (heures/jour), C2/C3 raisonnent par
-  épisode. On documente que la somme des épisodes ≠ C1 les jours à cheval sur minuit —
-  c'est **voulu** et correct.
-- Épisode `end < start` (édition erronée) : borné à 0 + signalé §E.
+- **Cohérence C1/C3** : même découpage, donc toujours cohérents (n dodos ⇒ n segments
+  de minutes dans le jour).
+- **Exception assumée sur C2** : l'épisode entier étant rattaché à un seul jour,
+  `longestSleepMin` peut **dépasser** `sleepMin` de ce jour (20h→04h : 240 min dormies
+  le jour de début, mais « plus long dodo » = 480 min le lendemain). C'est voulu :
+  C2 doit garder le sens de « plus longue traite sans réveil ».
+- Un jour dont le seul contenu est la **fin d'une nuit** est bien un jour « suivi ».
+- Épisode `end < start` (édition erronée) : borné à 0 + signalé §E ;
+  `end == start` : épisode ignoré (durée nulle).
 
 ---
 
@@ -152,14 +170,26 @@ partage sein vs biberon dans le temps**.
 Un encart discret « Qualité des données » liste les anomalies détectées, chacune
 cliquable pour corriger l'événement :
 
-- couche **sans contenu** renseigné ;
-- tétée **sans côté** (si on veut l'équilibre) ;
-- **dodo non terminé** démarré il y a > 16 h (probable oubli de « fin ») ;
-- **durée négative** (réveil avant coucher) ;
-- température **hors plage plausible** (< 34 ou > 42 °C).
+- couche **sans contenu** renseigné (`couchesSansType`) ;
+- tétée **sans côté** (`teteesSansCote`, pour l'équilibre) ;
+- **dodo non terminé** démarré il y a > 16 h (`dodosNonFermes`, probable oubli de « fin ») ;
+- **durée négative** (`dureesNegatives`, réveil avant coucher) ;
+- **dodo de durée improbable** ≥ 16 h bien que clos (`dureesAberrantes`) ;
+- **dodo qui chevauche le précédent** (`dodosChevauchants`, même sieste saisie 2 fois) ;
+- température **hors plage plausible** (`tempHorsPlage`, < 34 ou > 42 °C).
+
+Règles de l'encart :
+
+- **Portée = la fenêtre affichée** (7/14/30 j), pour *tous* les domaines : l'encart
+  décrit ce que montrent les cartes du dessus, pas tout l'historique.
+- Listes triées du **plus récent au plus ancien** (comme le journal) : l'ordre ne
+  dépend jamais de l'ordre d'arrivée des événements.
+- Chaque ligne est **tapable** et ouvre l'édition de l'événement fautif.
 
 Ces points ne sont pas des erreurs de calcul mais des **trous/erreurs de saisie** ;
 les exposer évite qu'une stat « fausse » passe inaperçue et fiabilise l'export IA.
+Corollaire : tout type d'anomalie produit par `stats.js` **doit** avoir sa ligne dans
+l'encart, sinon l'anomalie serait muette (garde automatisée, §J).
 
 ---
 
@@ -248,7 +278,7 @@ depuis la vue Stats :
 1. **Couche calcul pure** `Stats.*` : fonctions pures event[] → KPI, avec toutes les
    règles §0 (jour local, découpe minuit, jour partiel, champs manquants). **Testée**
    sur des jeux de données incluant les cas limites (minuit, dodo en cours, champs
-   absents) avant tout affichage — c'est là que se joue la précision.
+   absents) avant tout affichage — c'est là que se joue la précision (→ **§J**).
 2. **Vue Stats** (onglet, période, cartes + sparklines, bandeau du jour).
 3. **Section détails + encart qualité des données.**
 4. **Export** JSON + 2 CSV.
@@ -271,3 +301,54 @@ depuis la vue Stats :
 8. **Fiabilité des données** (voir §0.9) : `repas` depuis la naissance (6 août, jour
    partiel exclu des moyennes) ; `couches`/`sommeil` fiables **à partir du 11 août 2026**.
    Avant, « pas de donnée » (jamais un zéro).
+9. **Épisodes de sommeil impossibles** (validé le 2026-08-13, avant le prédictif) :
+   dodo clos ≥ 16 h et dodos qui se chevauchent → **signalés seulement**, jamais
+   filtrés ni fusionnés (voir §0.3). Les stats descriptives sont le reflet exact du
+   journal ; le prédictif, lui, écartera ces épisodes.
+
+---
+
+## J. Tests unitaires (`tests/`)
+
+```bash
+node tests/run.js          # tout
+node tests/run.js stats    # une seule famille de fichiers
+```
+
+Zéro dépendance, zéro build (comme le reste du dépôt) : un harnais de ~90 lignes
+(`tests/run.js`) + des fichiers `*.test.js`. Deux précautions qui évitent les faux verts :
+
+- le harnais **se relance lui-même avec `TZ=Europe/Paris`** — toutes les frontières de
+  jour et les tests d'heure d'été en dépendent ;
+- `stats.js` est chargé **tel quel** (`eval` + `const Stats` → `global.Stats`) : on teste
+  le fichier livré, sans copie ni adaptation qui pourrait diverger.
+
+### Couverture
+
+| Fichier | Ce qui est verrouillé |
+|---|---|
+| `stats.test.js` §1 | Résolution et découpe des épisodes : cas de référence 22h30→02h (90/120), épisode sur 3 jours, dodo en cours, bornes 15,9/16/16,1 h, `end<start`, `end==start`, `end` illisible, `data` absente, dodo de 40 s, invariant Σ segments = `totalMin`, tri et chevauchements de `sleepEpisodes` (y compris un épisode **englobé**) |
+| `stats.test.js` §2 | Agrégats par jour sur une **journée réaliste** complète, valeur par valeur ; jour majoritaire de C2 (et l'égalité) ; tombstones, checklist et « appris » non comptés ; hors fenêtre ignoré mais nuit qui **déborde dans** la fenêtre comptée ; jour partiel ; champs illisibles |
+| `stats.test.js` §3 | Dénominateurs des moyennes (`complete && tracked && dataX`), domaine antérieur à sa date de fiabilité, jour de naissance, aujourd'hui exclu des moyennes mais inclus dans les ratios, `les deux` = 50/50, intervalles repas/cacas à cheval sur minuit, `tempAlert`, tri des médicaments |
+| `stats.test.js` §4 | Les 7 types d'anomalies, les bornes 34/42 °C, dodos jointifs (≠ chevauchement), **portée fenêtre** et **tri** des listes |
+| `stats.test.js` §5 | Fuseau, `daysWindow`, nuit de 25 h (1500 min) et de 23 h (90+180), agrégat autour d'un changement d'heure, comptage de jours civils en `Math.round` |
+| `stats.test.js` §6 | **Propriétés sur 200 scénarios** (PRNG déterministe, graine fixe) : aucune valeur non finie, minutes/dodos par jour recalculés par un **second algorithme**, ≤ 1440 min hors chevauchement, chaque moyenne dans `[min, max]` de ses jours, résultat **indépendant de l'ordre** d'entrée et idempotent |
+| `guards.test.js` §7 | Gardes sur les sources : **aucun bloc de démo**, `CACHE` du SW = max des `?v=N` et `ASSETS` ≡ URLs versionnées d'`index.html`, division par un jour en ms toujours en `Math.round`, version d'export dérivée de l'asset, `domainStart`/`firstCompleteDay` bien passés, découpe à minuit non dupliquée, `stats.js` pur et surface publique stable, chaque anomalie affichée |
+
+### Hors périmètre (assumé)
+
+- **Synchro `Store`/Supabase** : couplée à `localStorage` + réseau, non testable sans
+  extraction préalable. Les tests garantissent que *si* le journal est correct, les
+  calculs le sont ; pas que la synchro livre le bon journal.
+- **Rendu UI** : vérifié à la main en preview (les gardes §7 couvrent les régressions
+  mécaniques : cache périmé, anomalie muette).
+- **Repas en double** (deux parents notant la même tétée) : contrairement au sommeil, un
+  chevauchement n'y est **pas** physiquement impossible → aucune heuristique fiable, donc
+  aucune détection (ce serait de faux positifs).
+
+### Règle de travail
+
+Toute correction de calcul commence par **un test qui échoue**, et toute règle modifiée
+est mise à jour **ici et dans les tests** en même temps. Vérifier de temps en temps que
+la suite est encore mordante en cassant volontairement une règle (round → floor, seuil
+16 h → 20 h…) : au moins un test doit rougir.

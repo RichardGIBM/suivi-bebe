@@ -20,6 +20,19 @@
      longestSleepMin peut donc dépasser sleepMin.
    - Dodo en cours (end=null) : compté jusqu'à maintenant si démarré il y a
      < 16 h ; sinon exclu et signalé (qualité des données).
+   - Dodo CLOS de ≥ 16 h (SLEEP_MAX_MS) : physiquement impossible (oubli d'arrêt
+     fermé le lendemain) → COMPTÉ quand même (les stats restent le reflet exact
+     du journal) mais SIGNALÉ en qualité pour correction.
+   - Dodos qui se CHEVAUCHENT (même sieste saisie depuis les 2 téléphones) :
+     minutes additionnées (idem, reflet du journal) et le plus tardif est
+     SIGNALÉ en qualité. Une journée peut donc dépasser 1440 min tant que le
+     doublon n'est pas supprimé.
+   - Invariant d'arrondi : la somme des minutes des segments d'un épisode est
+     TOUJOURS égale à son totalMin (pas de dérive ±1 min avec des secondes ≠ 0).
+   - Qualité des données : anomalies cherchées SUR LA FENÊTRE uniquement (tous
+     domaines, sommeil compris) — la boîte affichée suit le sélecteur 7/14/30 j.
+     Listes triées du + récent au + ancien (ordre stable, indépendant de l'ordre
+     d'arrivée des événements).
    - Aujourd'hui = jour partiel : EXCLU des moyennes.
    - Jour "suivi" = jour avec ≥ 1 événement ; un jour totalement vide est
      considéré "non suivi" et n'entre pas au dénominateur des moyennes
@@ -49,12 +62,6 @@ const Stats = {
     return out;
   },
 
-  // Chevauchement en minutes entre [aS,aE] et [bS,bE] (timestamps ms).
-  _overlapMin(aS, aE, bS, bE) {
-    const s = Math.max(aS, bS), e = Math.min(aE, bE);
-    return e > s ? (e - s) / 60000 : 0;
-  },
-
   /* ---------- Aperçu d'un point de sommeil (résolu) ----------
      Renvoie { startMs, endMs, valid, ongoing } ou null si à ignorer.
      - end présent  : épisode terminé (valid si end>start, sinon durée 0).
@@ -82,13 +89,19 @@ const Stats = {
      Renvoie, du plus ancien au plus récent :
        [{ dayMs, startMs, endMs, min, contPrev, contNext, ongoing, totalMin }]
      - min      : minutes dormies DANS ce jour (ce que le jour comptabilise) ;
-     - totalMin : durée de l'épisode entier (pour "plus long sommeil") ;
+     - totalMin : durée de l'épisode entier (pour "plus long sommeil"), égale par
+       construction à la SOMME des `min` (aucune dérive d'arrondi possible) ;
      - contPrev/contNext : le segment est tronqué à minuit avant/après.
      [] si l'épisode est à ignorer (dodo oublié > 16 h, durée nulle/négative). */
   sleepSegments(ev, nowMs) {
     const s = this._resolveSleep(ev, nowMs != null ? nowMs : Date.now());
     if (!s || !s.valid) return [];
-    const totalMin = Math.round((s.endMs - s.startMs) / 60000);
+    return this._splitAtMidnight(s);
+  },
+
+  // Découpe brute d'un épisode déjà résolu ({startMs, endMs, ongoing}).
+  // Utilisée par sleepSegments() et par compute() (via sleepEpisodes()).
+  _splitAtMidnight(s) {
     const out = [];
     let cur = this.startOfDay(new Date(s.startMs));
     // garde-fou : un épisode aberrant (date corrompue) ne doit pas boucler
@@ -99,10 +112,48 @@ const Stats = {
         dayMs: dS, startMs: a, endMs: b,
         min: Math.round((b - a) / 60000),
         contPrev: a > s.startMs, contNext: b < s.endMs,
-        ongoing: s.ongoing && b >= s.endMs,
-        totalMin,
+        ongoing: !!s.ongoing && b >= s.endMs,
+        totalMin: 0,   // renseigné juste après (= somme des min)
       });
       cur = this.addDays(cur, 1);
+    }
+    const totalMin = out.reduce((t, g) => t + g.min, 0);
+    for (const g of out) g.totalMin = totalMin;
+    return out;
+  },
+
+  /* ---------- Liste des épisodes de sommeil (résolus, triés) ----------
+     SOURCE UNIQUE des épisodes : qualité des données, agrégats et (à venir)
+     prédictif partent de là — jamais des événements bruts.
+     Renvoie, du plus ancien au plus récent :
+       [{ id, startMs, endMs, min, ongoing, aberrant, overlapsPrev }]
+     - min          : durée de l'épisode ENTIER (pas de découpe ici) ;
+     - aberrant     : épisode clos de ≥ 16 h → saisie invraisemblable (compté
+                      mais signalé) ;
+     - overlapsPrev : démarre avant la fin de l'épisode précédent (doublon).
+     Les épisodes ignorés (durée ≤ 0, dodo oublié > 16 h en cours, dates
+     invalides) n'apparaissent pas ; ils sont signalés par compute(). */
+  sleepEpisodes(allEvents, opts = {}) {
+    const nowMs = opts.nowMs != null ? opts.nowMs : Date.now();
+    const out = [];
+    for (const e of (allEvents || [])) {
+      if (!e || e.deleted || e.action !== 'sommeil') continue;
+      const s = this._resolveSleep(e, nowMs);
+      if (!s || !s.valid) continue;
+      out.push({
+        id: e.id, startMs: s.startMs, endMs: s.endMs,
+        min: Math.round((s.endMs - s.startMs) / 60000),
+        ongoing: s.ongoing,
+        aberrant: !s.ongoing && (s.endMs - s.startMs) >= this.SLEEP_MAX_MS,
+        overlapsPrev: false,
+      });
+    }
+    out.sort((a, b) => a.startMs - b.startMs || a.endMs - b.endMs);
+    // on compare à la fin la plus tardive vue jusqu'ici (un long épisode peut
+    // en englober un court : le suivant chevauche quand même)
+    for (let i = 1, maxEnd = out.length ? out[0].endMs : 0; i < out.length; i++) {
+      if (out[i].startMs < maxEnd) out[i].overlapsPrev = true;
+      if (out[i].endMs > maxEnd) maxEnd = out[i].endMs;
     }
     return out;
   },
@@ -122,7 +173,9 @@ const Stats = {
                    longestFeedGapMin, avgTeteeDurationMin, avgPoopGapMin,
                    tempMax, tempAlert, bains, meds:[{ts,name}], trackedDays },
          quality: { couchesSansType:[ids], teteesSansCote:[ids],
-                    dodosNonFermes:[ids], dureesNegatives:[ids], tempHorsPlage:[ids] }
+                    dodosNonFermes:[ids], dureesNegatives:[ids],
+                    dureesAberrantes:[ids], dodosChevauchants:[ids],
+                    tempHorsPlage:[ids] }   // anomalies de la FENÊTRE seulement
        }
   */
   compute(allEvents, opts = {}) {
@@ -170,8 +223,13 @@ const Stats = {
       return o;
     });
 
-    // Qualité des données (sur la fenêtre uniquement)
-    const quality = { couchesSansType: [], teteesSansCote: [], dodosNonFermes: [], dureesNegatives: [], tempHorsPlage: [] };
+    // Qualité des données (anomalies dont l'événement DÉMARRE dans la fenêtre)
+    const quality = {
+      couchesSansType: [], teteesSansCote: [],
+      dodosNonFermes: [], dureesNegatives: [], dureesAberrantes: [], dodosChevauchants: [],
+      tempHorsPlage: [],
+    };
+    const inWindow = ms => Number.isFinite(ms) && ms >= firstMs && ms < lastMs;
 
     // Période : accumulateurs
     let pLeft = 0, pRight = 0;            // équilibre côtés (les deux = +0.5/+0.5)
@@ -182,22 +240,31 @@ const Stats = {
     const feedTimesPeriod = [];           // pour l'intervalle moyen sur la période
     const poopTimesPeriod = [];           // cacas/mixtes de la fenêtre → intervalle moyen entre 2 cacas
 
-    // --- Sommeil : traité à part car il faut la découpe à minuit sur toute la fenêtre ---
+    // --- Sommeil : traité à part car il faut la découpe à minuit sur toute la
+    // fenêtre (une nuit démarrée AVANT la fenêtre y déverse ses minutes) ---
+
+    // 1) Anomalies détectables sur l'événement brut (dodo oublié, durée négative)
     for (const e of events) {
       if (e.action !== 'sommeil') continue;
       const startMs = new Date(e.ts).getTime();
-      // anomalie : dodo non fermé et trop vieux
+      if (!inWindow(startMs)) continue;
       const hasEnd = e.data && e.data.end;
       if (!hasEnd) {
-        if (!(nowMs - startMs < this.SLEEP_MAX_MS && nowMs > startMs)) {
-          if (Number.isFinite(startMs)) quality.dodosNonFermes.push(e.id);
-        }
+        if (!(nowMs - startMs < this.SLEEP_MAX_MS && nowMs > startMs)) quality.dodosNonFermes.push(e.id);
       } else {
         const endMs = new Date(e.data.end).getTime();
-        if (Number.isFinite(endMs) && Number.isFinite(startMs) && endMs < startMs) quality.dureesNegatives.push(e.id);
+        if (Number.isFinite(endMs) && endMs < startMs) quality.dureesNegatives.push(e.id);
+      }
+    }
+
+    // 2) Épisodes résolus (triés, chevauchements marqués) → découpe + agrégats
+    for (const ep of this.sleepEpisodes(events, { nowMs })) {
+      if (inWindow(ep.startMs)) {
+        if (ep.aberrant) quality.dureesAberrantes.push(ep.id);
+        if (ep.overlapsPrev) quality.dodosChevauchants.push(ep.id);
       }
       // Découpe à minuit : chaque jour chevauché encaisse SES minutes + 1 dodo.
-      const segs = this.sleepSegments(e, nowMs);
+      const segs = this._splitAtMidnight(ep);
       if (!segs.length) continue;
       let best = segs[0];
       for (const g of segs) {
@@ -327,6 +394,12 @@ const Stats = {
       bains: pBains,
       meds: pMeds.sort((a, b) => new Date(b.ts) - new Date(a.ts)),
     };
+
+    // Anomalies du + récent au + ancien (comme le journal). Sans ce tri, l'ordre
+    // des lignes dépendrait de l'ordre d'arrivée des événements — instable, et
+    // incohérent entre les types (le sommeil est balayé par épisodes triés).
+    const tsById = new Map(events.map(e => [e.id, new Date(e.ts).getTime()]));
+    for (const k in quality) quality[k].sort((a, b) => (tsById.get(b) || 0) - (tsById.get(a) || 0));
 
     const today = days.find(d => d.partial) || null;
     return { days, today, averages, period, quality };

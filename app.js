@@ -9,6 +9,16 @@
    et plus tard le dashboard, la heatmap calendrier et l'export.
    ========================================================= */
 
+/* Version de l'app = celle de l'asset lui-même (index.html charge
+   `app.js?v=N`, aligné sur CACHE dans sw.js) → rien à maintenir à la main
+   dans les exports. */
+const APP_VERSION = (() => {
+  try {
+    const v = new URL(document.currentScript.src).searchParams.get('v');
+    return v ? 'v' + v : 'inconnue';
+  } catch { return 'inconnue'; }
+})();
+
 /* ---------- Couche de données ----------
    Modèle : journal d'événements { id, action, data, ts, deleted }.
    - Source de vérité locale = localStorage (offline-first, rendu instantané).
@@ -1271,6 +1281,8 @@ function renderStats() {
     ['teteesSansCote', '🤱', 'Tétée sans côté'],
     ['dodosNonFermes', '😴', 'Dodo non terminé'],
     ['dureesNegatives', '⏱️', 'Durée négative (réveil avant coucher)'],
+    ['dureesAberrantes', '⏱️', 'Dodo de durée improbable (> 16 h)'],
+    ['dodosChevauchants', '😴', 'Dodo qui chevauche le précédent'],
     ['tempHorsPlage', '🌡️', 'Température hors plage'],
   ];
   let qRows = '', qCount = 0;
@@ -1340,7 +1352,7 @@ function exportJSON() {
       exported_at: new Date().toISOString(),
       timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
       tz_offset_min: -new Date().getTimezoneOffset(),
-      app_version: 'v23',
+      app_version: APP_VERSION,
       schema_version: 1,
       includes_deleted: false,
       count: events.length,
@@ -1379,7 +1391,9 @@ function exportDailyCSV() {
   const all = Store.all();
   if (!all.length) { toast('Aucune donnée'); return; }
   const earliest = all.reduce((m, e) => Math.min(m, new Date(e.ts).getTime()), Infinity);
-  const n = Math.floor((startOfDay(new Date()).getTime() - startOfDay(new Date(earliest)).getTime()) / 86400000) + 1;
+  // Math.round (et non floor) : un passage à l'heure d'été rend l'écart plus
+  // court de 1 h et ferait perdre le jour le plus ancien de l'export.
+  const n = Math.round((startOfDay(new Date()).getTime() - startOfDay(new Date(earliest)).getTime()) / 86400000) + 1;
   const s = Stats.compute(all, { periodDays: Math.max(1, n), domainStart: DATA_START, firstCompleteDay: FIRST_COMPLETE_DAY });
   const header = ['date', 'partiel', 'repas', 'tetees', 'biberons', 'volume_ml', 'temps_sein_min', 'part_biberon_pct',
     'sommeil_min', 'plus_long_sommeil_min', 'nb_dodos', 'pipis', 'cacas', 'couches', 'temp_max_c'];
