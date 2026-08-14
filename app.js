@@ -1699,6 +1699,14 @@ function labFeatText(c) {
   if (c.target === 'remaining' && c.features.elapsedSleepMin != null) {
     bits.push(`déjà endormi ${fmtDuration(Math.round(c.features.elapsedSleepMin))}`);
   }
+  // Repas : mesurés à la même ancre que le cas. Absents sur la sonde
+  // `remaining` (§3.8.6) — donc rien à afficher, plutôt qu'un « — » trompeur.
+  if (c.features.sinceFeedMin != null) {
+    const kind = c.features.feedKind === 'bottle' ? 'biberon' : 'tétée';
+    const ml = c.features.lastBottleMl != null ? ` ${c.features.lastBottleMl} ml` : '';
+    bits.push(`dernier repas ${fmtDuration(Math.round(c.features.sinceFeedMin))} avant (${kind}${ml})`);
+    if (c.features.feeds3h != null) bits.push(`${c.features.feeds3h} repas sur 3 h`);
+  }
   return bits.join(' · ');
 }
 
@@ -2024,7 +2032,7 @@ function labExpCard(lab) {
 function labExportCard(lab) {
   const c = lab.counts;
   return labCard('Analyse externe', `
-    <div class="est-empty">Un seul fichier JSON, auto-descriptif (conventions de signe, définitions et consignes de lecture voyagent dedans), généré <b>localement</b> dans le navigateur : rien n'est envoyé à un serveur. Domaine sommeil uniquement, aucun nom, aucune date de naissance — seulement l'âge en jours.</div>
+    <div class="est-empty">Un seul fichier JSON, auto-descriptif (conventions de signe, définitions et consignes de lecture voyagent dedans), généré <b>localement</b> dans le navigateur : rien n'est envoyé à un serveur. Sommeil et <b>rythme des repas</b> (délai, type, volume des biberons, nombre sur 3 h) — puisque c'est ce que les modèles MF testent ; aucun nom, aucune date de naissance, rien des autres domaines — seulement l'âge en jours.</div>
     <button type="button" class="btn btn-primary lab-btn" id="labExport">Exporter pour analyse LLM (.json)</button>
     <div class="est-n" id="labExportSum">${c.models} modèles (${c.instantiated} instanciés) · ${c.cases} cas · ${c.weekFrom == null ? 'aucune semaine' : `S${c.weekFrom}–S${c.weekTo}`} · schéma ${labSchemaLabel()}</div>`,
     { id: 'lab-export' });

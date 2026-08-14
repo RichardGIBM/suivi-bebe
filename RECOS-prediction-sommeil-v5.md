@@ -1096,6 +1096,35 @@ créer des rendez-vous de lecture, pas d'empêcher le calcul.
 | **M6** | Structure de journée | onset/durée | segmentation day/night ou indice de sieste si une structure apparaît | shadow seulement si les sous-groupes sont calculables sans pools vides |
 | **M7** | Récence pondérée | onset/durée | médiane/fonction robuste pondérée par récence, demi-vie testée | shadow quand l'historique devient assez long pour comparer |
 | **M8+** | Hybrides | selon besoin | combinaison ciblée de challengers déjà compris | uniquement après résultats mono-variable convaincants |
+| **MF1** | Délai depuis le dernier repas | onset + durée/wake | k-NN sur `minutesSinceLastFeed` (sur la durée : délai repas → endormissement) | collecte/shadow **dès maintenant**, au même rang que la baseline |
+| **MF2** | Type du dernier repas | onset + durée/wake | sous-groupe sein / biberon (≥ 5 cas par groupe) | idem |
+| **MF3** | Volume du dernier biberon | onset + durée/wake | k-NN sur `lastBottleMl`, **biberons seulement** | idem |
+| **MF4** | Grappe de repas (3 h) | onset + durée/wake | sous-groupe `sparse ≤1` / `steady 2` / `cluster ≥3` | idem |
+
+**La famille MF (alimentation) n'est pas reléguée aux « features secondaires » de S10** :
+elle est calculée en shadow dès le premier jour, exactement comme M1–M7. Quatre règles la
+gouvernent, et elles sont testées (§16 de `SPECS-stats.md`) :
+
+1. **shadow d'abord, toujours.** Aucune règle alimentaire en dur dans le modèle actif —
+   pas de « repas terminé → retrancher 20 min à la fenêtre d'éveil » avant qu'un backtest
+   ne l'ait démontré. Sinon on perd M0 comme expérience contrôle.
+2. **Aucune donnée fabriquée.** `ml` n'existe que pour les biberons ; la `duration` d'une
+   tétée est un preset tapé (≈ toujours 15 min chez ce bébé) et n'est **jamais** convertie
+   en volume ni utilisée comme caractéristique. Aucune fin de repas n'étant enregistrée,
+   les délais partent de l'instant logué.
+3. **Deux cibles seulement** (`onset`, `wake`), jamais la sonde `remaining` : les
+   échantillons d'entraînement mesurent leurs caractéristiques alimentaires à
+   l'endormissement, alors que la sonde est ancrée au milieu du dodo. Comparer les deux
+   serait un k-NN entre choux et carottes.
+4. **Piège de lecture.** Plus le rythme est régulier, plus « temps depuis le repas » et
+   « temps depuis le réveil » (M0) sont colinéaires. Un gain MF ne peut donc apparaître que
+   là où le rythme **casse** (grappe du soir, jeûne inhabituel) : c'est là qu'il faut
+   regarder les gains appariés, pas sur la moyenne globale. Et on ne présuppose pas
+   « gros repas → longue sieste » : c'est précisément ce que MF3 met à l'épreuve.
+
+Premier hybride en attente derrière elles (§3.8.6) : la **position du repas dans la fenêtre
+d'éveil**, `1 − minutesSinceLastFeed / previousWakeDuration`, qui combine MF1 et M5 — donc à
+n'instancier qu'après lecture de leurs effets simples.
 
 **M2 mérite une note particulière.** Il ne faut pas attendre S6 pour commencer à le
 calculer : savoir que bébé dort encore est une information réelle. En revanche, tant que
@@ -1129,6 +1158,7 @@ que les données racontent »**.
 | Âge | Date | Revue proposée | Ce qu'on regarde | Ce que la semaine ne fait PAS |
 |---|---|---|---|---|
 | **Maintenant** | dès le 13 août 2026 | Démarrer M0 + collecte/shadow des challengers calculables | établir la baseline et commencer l'historique comparatif | attendre artificiellement une semaine pour dériver une feature |
+| **S3** | **27 août 2026** | **Checkpoint alimentation — MF1/MF2/MF3/MF4** | le rythme des repas explique-t-il quelque chose que l'heure et l'historique n'expliquent pas déjà ? regarder les cas où le rythme **casse**, pas la moyenne | coder une règle « repas → fenêtre d'éveil raccourcie » |
 | **S4** | **3 sept. 2026** | **Checkpoint récence — M1** | les variantes de fenêtre divergent-elles enfin ? gain M1 vs M0, stabilité sur les derniers cas | activer M1 automatiquement |
 | **S6** | **17 sept. 2026** | **Checkpoint ASLEEP — M2** | le remaining sleep améliore-t-il le réveil, surtout quand M0 a déjà été dépassé ? | commencer M2 seulement à S6 |
 | **S8** | **1 oct. 2026** | **Checkpoint heure — M3** | le gain du contexte horaire devient-il positif/stable ? existe-t-il surtout sur certaines tranches ? | supposer qu'un effet circadien apparaît ce jour-là |
@@ -1249,8 +1279,11 @@ L'export « analyse LLM » doit être limité au domaine sommeil et **dé-identi
 
 - pas de nom/prénom ;
 - pas de date de naissance exacte ;
-- pas d'autres domaines (alimentation, couches, santé...) tant qu'ils ne sont pas eux-mêmes
-  utilisés comme features d'un challenger ;
+- pas d'autres domaines (couches, santé...) tant qu'ils ne sont pas eux-mêmes utilisés
+  comme features d'un challenger. **L'alimentation l'est depuis la famille MF** : le
+  périmètre déclaré est donc `sleep-and-feeding-deidentified`, et l'export embarque les 5
+  caractéristiques alimentaires (délai, type, volume du biberon, nombre sur 3 h, profil de
+  grappe) — mais **aucun repas brut**, aucun côté de tétée, aucune durée de tétée ;
 - âge en jours au moment de chaque cas ;
 - heure locale nécessaire à M3, mais pas d'adresse/localisation précise ;
 - identifiant local neutre (`baby-1`) ;

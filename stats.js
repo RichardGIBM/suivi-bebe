@@ -551,6 +551,70 @@ const Stats = {
     return { startMs, episodes: kept, closed, ongoing: ongoingRaw, gaps, durations, excluded };
   },
 
+  /* ---------- Repas : ligne de temps alimentaire ----------
+     Primitive pure, au même titre que `sleepEpisodes` : la liste des repas
+     triée par instant, pour que le laboratoire (§3.8) puisse TESTER si le
+     rythme alimentaire explique quelque chose du sommeil.
+
+     Ce que la saisie donne réellement (voir FORMS dans app.js) :
+       - tétée   : `side` et `duration` sont OPTIONNELS, et `duration` est un
+                   PRESET tapé (5/10/15/20/30 min) — une étiquette de saisie,
+                   pas une mesure ;
+       - biberon : `ml` est toujours écrit (défaut 90) ;
+       - `ts`    : l'instant du log. Rien dans l'app ne dit s'il est tapé au
+                   début ou à la fin du repas, et AUCUNE heure de fin n'est
+                   enregistrée.
+     Trois conséquences assumées :
+       1. on ne fabrique pas de « fin de repas » (`ts + 15 min` serait une
+          donnée inventée) : tous les délais partent de l'instant enregistré ;
+       2. la durée n'est jamais une caractéristique (quasi constante, et
+          quantifiée sur 5 valeurs : elle ne porterait que du bruit de saisie) ;
+       3. elle n'est jamais convertie en volume — le volume n'existe que pour
+          les biberons. */
+  feedTimeline(allEvents, opts = {}) {
+    const nowMs = opts.nowMs != null ? opts.nowMs : Date.now();
+    const startMs = (opts.domainStart && opts.domainStart.repas)
+      ? this.startOfDay(opts.domainStart.repas).getTime() : -Infinity;
+    const out = [];
+    for (const e of (allEvents || [])) {
+      if (!e || e.deleted) continue;
+      if (e.action !== 'tetee' && e.action !== 'biberon') continue;
+      const ms = new Date(e.ts).getTime();
+      if (!isFinite(ms) || ms < startMs || ms > nowMs) continue;
+      const ml = Number(e.data && e.data.ml);
+      out.push({
+        atMs: ms,
+        kind: e.action === 'biberon' ? 'bottle' : 'breast',
+        ml: (e.action === 'biberon' && isFinite(ml)) ? ml : null,
+      });
+    }
+    out.sort((a, b) => a.atMs - b.atMs);
+    return out;
+  },
+
+  /* Caractéristiques alimentaires connues À un instant donné, et rien
+     d'ultérieur (`feeds` est trié : on coupe par recherche dichotomique).
+     Tout à `null` quand aucun repas n'est connu dans les 12 h précédentes —
+     jamais de valeur fabriquée pour combler un trou de saisie. */
+  _labFeedFeat(feeds, atMs) {
+    const none = { sinceFeedMin: null, feedKind: null, lastBottleMl: null, feeds3h: null, feedCluster: null };
+    if (!feeds || !feeds.length) return none;
+    const hi = this._lowerBound(feeds, atMs + 1);          // repas connus à `atMs`
+    if (!hi) return none;
+    const last = feeds[hi - 1];
+    const sinceMs = atMs - last.atMs;
+    if (sinceMs > this.FEED_SINCE_MAX_MS) return none;     // repas non noté : on ne sait pas
+    let n3 = 0;
+    for (let i = hi - 1; i >= 0 && atMs - feeds[i].atMs <= this.FEED_CLUSTER_WINDOW_MS; i--) n3++;
+    return {
+      sinceFeedMin: sinceMs / 60000,
+      feedKind: last.kind,
+      lastBottleMl: last.kind === 'bottle' ? last.ml : null,
+      feeds3h: n3,
+      feedCluster: n3 <= 1 ? 'sparse' : (n3 === 2 ? 'steady' : 'cluster'),
+    };
+  },
+
   /* Qualité d'un backtest (§3.6) : le RECUL (combien de prédictions vérifiées)
      et la PERFORMANCE (de combien on se trompe) sont deux choses distinctes —
      jamais fusionnées en un « % de confiance ».
@@ -715,9 +779,16 @@ const Stats = {
      walk-forward, tout montrer, ne rien promouvoir automatiquement.
 
      M0 est le CHAMPION (le modèle réellement affiché par
-     sleepPrediction). M1…M7 sont des CHALLENGERS en shadow mode :
-     ils produisent une prédiction et un backtest, sans aucun effet
-     sur l'estimation principale.
+     sleepPrediction). M1…M7 et MF1…MF4 sont des CHALLENGERS en
+     shadow mode : ils produisent une prédiction et un backtest, sans
+     aucun effet sur l'estimation principale.
+
+     Deux familles : M* n'utilise que le sommeil, MF* le rythme des
+     repas (§3.8.6). La famille MF est en shadow dès le premier jour,
+     au même niveau que la baseline — mais en shadow justement parce
+     que M0 est l'expérience contrôle : le jour où l'alimentation
+     entrerait dans le modèle affiché, on ne saurait plus dire si le
+     prédictif s'est amélioré ou dégradé.
 
      Trois cibles :
        - `onset`     : endormissement, ancré au dernier réveil réel ;
@@ -728,6 +799,9 @@ const Stats = {
          (exactement la question du checkpoint S6, §3.13). À cette
          sonde, M0 dit « il devrait se réveiller maintenant » alors
          que M2 conditionne la durée restante à `D > elapsedSleep`.
+         Les caractéristiques alimentaires y sont volontairement
+         nulles : l'ancre est au milieu du dodo, alors que les
+         échantillons mesurent les leurs à l'endormissement.
 
      Aucune fuite du futur : chaque cas ne connaît que les
      échantillons dont `atMs <= asOfMs`. Conséquence exploitée
@@ -740,7 +814,8 @@ const Stats = {
      partir de la seule séquence des cas.
      ========================================================= */
 
-  LAB_SCHEMA_VERSION: 'sleep-prediction-lab/1.0',
+  // 1.1 : ajout additif des caractéristiques alimentaires et de la famille MF.
+  LAB_SCHEMA_VERSION: 'sleep-prediction-lab/1.1',
   LAB_SUBJECT_ID: 'baby-1',
 
   // §3.10 — constantes PRODUIT (points de départ ajustables), jamais
@@ -751,19 +826,24 @@ const Stats = {
   FEATURE_CONFIRM_N: 20,
   FEATURE_MAX_CONCURRENT_TRIALS: 2,
 
-  LAB_KNN_K: 5,                 // M4/M5 : voisins retenus
+  LAB_KNN_K: 5,                 // M4/M5/MF1/MF3 : voisins retenus
   LAB_KNN_MIN_N: 8,             // …et taille mini de la fenêtre pour que « voisin » veuille dire quelque chose
-  LAB_MIN_SUBGROUP_N: 5,        // M6 : pas de sous-groupe quasi vide
+  LAB_MIN_SUBGROUP_N: 5,        // M6/MF2/MF4 : pas de sous-groupe quasi vide
+  // Alimentation : mêmes garde-fous que pour l'éveil (WAKE_GAP_MAX_MS) —
+  // au-delà, ce n'est plus un jeûne, c'est un repas qu'on a oublié de noter.
+  FEED_SINCE_MAX_MS: 12 * 60 * 60 * 1000,
+  FEED_CLUSTER_WINDOW_MS: 3 * 60 * 60 * 1000,   // fenêtre du décompte « grappe de repas »
   LAB_WEIGHTED_MIN_N: 8,        // M7 : pondérer 3 points n'a pas de sens
   LAB_HALF_LIFE_H: 72,          // M7 : demi-vie de la pondération par récence
   LAB_RECENT_N: 40,             // fenêtre « recent40 » des métriques
   LAB_RECENT_SHORT_N: 10,       // « 10 derniers cas » (informatif, très volatil)
-  LAB_CHECKPOINT_WEEKS: [4, 6, 8, 10, 12, 16],
+  LAB_CHECKPOINT_WEEKS: [3, 4, 6, 8, 10, 12, 16],
   LAB_CHECKPOINT_EVERY_WEEKS: 4,
   // §3.13 — un checkpoint est un rendez-vous de LECTURE : il dit « regarde
   // maintenant ce que les données racontent », il ne démarre aucun modèle
   // (tout ce qui est calculable l'est déjà avant).
   LAB_CHECKPOINT_FOCUS: {
+    3: { label: 'Checkpoint alimentation', models: ['MF1', 'MF2', 'MF3', 'MF4'], watch: 'le rythme des repas explique-t-il quelque chose que l’heure et l’historique n’expliquent pas déjà ? regarder les cas où le rythme casse (grappe de repas, jeûne inhabituel), pas la moyenne' },
     4: { label: 'Checkpoint récence', models: ['M1'], watch: 'les variantes de fenêtre divergent-elles enfin ? gain M1 vs M0, stabilité sur les derniers cas' },
     6: { label: 'Checkpoint ASLEEP', models: ['M2'], watch: 'le sommeil restant améliore-t-il le réveil, surtout quand M0 a déjà été dépassé ?' },
     8: { label: 'Checkpoint heure', models: ['M3'], watch: 'le gain du contexte horaire devient-il positif et stable ? existe-t-il surtout sur certaines tranches ?' },
@@ -921,12 +1001,73 @@ const Stats = {
         return this._weightedMedian(w.map(s => ({ v: s.min, w: Math.pow(2, -(c.asOfMs - s.atMs) / hl) })));
       },
     },
+    /* ---- Famille MF : rythme des repas (§3.8.6) ----
+       Montée au rang de challenger dès le premier jour, au même niveau que la
+       baseline — mais en SHADOW : M0 est l'expérience contrôle, l'alimentation
+       n'entre pas dans le modèle affiché, et aucune règle du genre « repas
+       terminé → retrancher 20 min » n'est codée en dur : elle passerait devant
+       le backtest sans être démontrée.
+
+       Deux cibles seulement (`onset`, `wake`) : ce sont celles où la
+       caractéristique du cas et celle des échantillons se mesurent au même
+       genre d'instant (le réveil, l'endormissement). Sur les sondes, l'ancre
+       est au milieu de l'épisode et la comparaison n'aurait pas de sens.
+
+       Piège de lecture, à garder en tête devant les gains : plus le rythme est
+       régulier, plus « temps depuis le repas » et « temps depuis le réveil »
+       (M0) sont colinéaires. Un gain ne peut donc apparaître que là où le
+       rythme CASSE — cluster feeding, poussée de croissance. C'est là qu'il
+       faut regarder, pas sur la moyenne globale. */
+    {
+      id: 'MF1', label: 'Délai depuis le dernier repas', version: 1,
+      targets: ['onset', 'wake'], features: ['recentHistory', 'minutesSinceLastFeed'],
+      parameters: { windowDays: 14, windowMaxSamples: 40, neighbours: 5, maxSinceHours: 12 },
+      note: 'Médiane des cas observés après un délai comparable depuis le dernier repas noté (5 plus proches voisins). Sur la durée de sommeil, c’est le délai repas → endormissement.',
+      predict(c) {
+        return this._labKnn(c, this._labWindow(c, 14, 40), 'sinceFeedMin');
+      },
+    },
+    {
+      id: 'MF2', label: 'Type du dernier repas', version: 1,
+      targets: ['onset', 'wake'], features: ['recentHistory', 'lastFeedKind'],
+      parameters: { windowDays: 14, windowMaxSamples: 40, groups: ['breast', 'bottle'], minPerGroup: 5 },
+      note: 'Médiane restreinte aux cas dont le dernier repas était du même type (sein / biberon). La durée d’une tétée n’intervient jamais : c’est un preset saisi, pas une mesure.',
+      predict(c) {
+        const kind = c.features.feedKind;
+        if (!kind) return null;
+        const w = this._labWindow(c, 14, 40).filter(s => this._labFeat(c, s).feedKind === kind);
+        if (w.length < this.LAB_MIN_SUBGROUP_N) return null;
+        return this._median(w.map(s => s.min));
+      },
+    },
+    {
+      id: 'MF3', label: 'Volume du dernier biberon', version: 1,
+      targets: ['onset', 'wake'], features: ['recentHistory', 'lastBottleMl'],
+      parameters: { windowDays: 14, windowMaxSamples: 40, neighbours: 5, bottlesOnly: true },
+      note: 'Médiane des cas observés après un biberon de volume comparable (5 plus proches voisins). Ne dit rien quand le dernier repas était une tétée : le volume n’existe pas — aucune conversion depuis la durée. Teste « gros repas → long sommeil » au lieu de le supposer.',
+      predict(c) {
+        return this._labKnn(c, this._labWindow(c, 14, 40), 'lastBottleMl');
+      },
+    },
+    {
+      id: 'MF4', label: 'Grappe de repas (3 h)', version: 1,
+      targets: ['onset', 'wake'], features: ['recentHistory', 'feedCluster'],
+      parameters: { windowDays: 14, windowMaxSamples: 40, windowHours: 3, groups: ['sparse ≤1', 'steady 2', 'cluster ≥3'], minPerGroup: 5 },
+      note: 'Médiane restreinte aux cas ayant le même profil de repas sur les 3 h précédentes : c’est le rythme qui est testé, pas le dernier repas seul — donc les soirées de cluster feeding.',
+      predict(c) {
+        const cl = c.features.feedCluster;
+        if (!cl) return null;
+        const w = this._labWindow(c, 14, 40).filter(s => this._labFeat(c, s).feedCluster === cl);
+        if (w.length < this.LAB_MIN_SUBGROUP_N) return null;
+        return this._median(w.map(s => s.min));
+      },
+    },
     {
       id: 'M8', label: 'Hybride ciblé', version: 0,
       targets: [], features: [], parameters: {},
       predict: null,
       blocked: 'Non instancié : un modèle combiné ne se crée qu’après avoir lu et compris les effets simples (§3.8.6), sinon le gain n’est plus attribuable.',
-      note: 'Placeholder de discipline d’attribution — une modification à la fois contre M0 (§3.10).',
+      note: 'Placeholder de discipline d’attribution — une modification à la fois contre M0 (§3.10). Premier candidat en attente : la position du repas dans la fenêtre d’éveil, `1 − sinceFeedMin / prevWakeMin`, qui combine deux caractéristiques déjà testées séparément (MF1 et M5) — donc à n’instancier qu’après avoir lu leurs effets simples.',
     },
   ],
 
@@ -951,7 +1092,7 @@ const Stats = {
 
   /* Features de chaque échantillon d'entraînement, mêmes définitions que
      celles des cas (sinon un k-NN comparerait des choux et des carottes). */
-  _labFeatMap(S, ix) {
+  _labFeatMap(S, ix, feeds) {
     const map = new Map();
     for (const s of S.gaps) {
       const prev = ix.prevOf(s.ep);                        // dodo qui vient de finir
@@ -959,6 +1100,10 @@ const Stats = {
         localHour: this._localHour(s.fromMs),
         prevSleepMin: ix.dur(prev),
         prevWakeMin: prev ? ix.wakeBefore(prev) : null,
+        // Repas mesurés à l'ANCRE de l'échantillon — le réveil pour un écart
+        // d'éveil, l'endormissement pour une durée : exactement l'instant où
+        // le cas correspondant mesure les siennes.
+        ...this._labFeedFeat(feeds, s.fromMs),
       });
     }
     for (const s of S.durations) {
@@ -966,6 +1111,7 @@ const Stats = {
         localHour: this._localHour(s.ep.startMs),
         prevSleepMin: ix.dur(ix.prevOf(s.ep)),
         prevWakeMin: ix.wakeBefore(s.ep),
+        ...this._labFeedFeat(feeds, s.ep.startMs),
       });
     }
     return map;
@@ -977,7 +1123,7 @@ const Stats = {
   },
 
   /* ---------- Cas walk-forward ---------- */
-  _labCases(S, ix, birthMs) {
+  _labCases(S, ix, birthMs, feeds) {
     const out = [];
     // Numérotation PAR CIBLE et dans l'ordre chronologique de création : un
     // cas garde le même identifiant d'un export à l'autre (ajouter des dodos
@@ -1000,6 +1146,10 @@ const Stats = {
         prevSleepMin: ix.dur(prev),
         prevWakeMin: prev ? ix.wakeBefore(prev) : null,
         elapsedSleepMin: null,
+        // Depuis combien de temps bébé n'avait-il pas mangé au moment où il
+        // s'est réveillé ? (le repas qui suit ce réveil n'existe pas encore
+        // pour ce cas : ce serait une fuite du futur)
+        ...this._labFeedFeat(feeds, g.fromMs),
       });
     }
     for (const d of S.durations) {
@@ -1008,6 +1158,9 @@ const Stats = {
         prevSleepMin: ix.dur(ix.prevOf(d.ep)),
         prevWakeMin: ix.wakeBefore(d.ep),
         elapsedSleepMin: 0,
+        // `sinceFeedMin` ici = délai entre le dernier repas noté et
+        // l'endormissement : entièrement dans le passé de l'ancre.
+        ...this._labFeedFeat(feeds, d.ep.startMs),
       });
       // Sonde `remaining` : à l'heure que M0 annonçait, si bébé dormait encore.
       const w = this._predWindow(S.durations, d.ep.startMs, this.SD_WINDOW_DAYS, this.SD_WINDOW_MAX_SAMPLES);
@@ -1019,6 +1172,12 @@ const Stats = {
         prevSleepMin: ix.dur(ix.prevOf(d.ep)),
         prevWakeMin: ix.wakeBefore(d.ep),
         elapsedSleepMin: (probeMs - d.ep.startMs) / 60000,
+        // Repas VOLONTAIREMENT nuls sur la sonde : ici l'ancre est au milieu du
+        // dodo, alors que les échantillons d'entraînement mesurent leurs
+        // caractéristiques alimentaires à l'endormissement. Les renseigner
+        // laisserait croire qu'on peut les comparer aux deux autres cibles —
+        // ce serait exactement le k-NN « choux et carottes » de _labFeatMap.
+        ...this._labFeedFeat(null, probeMs),
       });
     }
     out.sort((a, b) => a.realMs - b.realMs || (a.id < b.id ? -1 : 1));
@@ -1255,9 +1414,10 @@ const Stats = {
     const S = this._predSamples((allEvents || []).filter(e => e && !e.deleted),
       { nowMs, domainStart: opts.domainStart });
     const ix = this._labIndex(S);
-    const featMap = this._labFeatMap(S, ix);
+    const feeds = this.feedTimeline(allEvents, { nowMs, domainStart: opts.domainStart });
+    const featMap = this._labFeatMap(S, ix, feeds);
 
-    const cases = this._labCases(S, ix, birthMs);
+    const cases = this._labCases(S, ix, birthMs, feeds);
     for (const c of cases) {
       const preds = this._labPredictCase(c, S, featMap);
       for (const id of Object.keys(preds)) {
@@ -1286,6 +1446,11 @@ const Stats = {
           prevSleepMin: ix.dur(lastClosed),
           prevWakeMin: ix.wakeBefore(lastClosed),
           elapsedSleepMin: null,
+          // Repas mesurés au RÉVEIL, pas à `nowMs` : c'est la définition que
+          // le backtest a validée. Un repas pris depuis le réveil ne peut
+          // donc pas entrer ici — il n'entrerait dans aucun cas backtesté,
+          // et la prédiction affichée cesserait d'être celle qu'on mesure.
+          ...this._labFeedFeat(feeds, lastClosed.endMs),
         },
       });
     } else if (state === 'ASLEEP') {
@@ -1297,6 +1462,7 @@ const Stats = {
           prevSleepMin: ix.dur(ix.prevOf(S.ongoing)),
           prevWakeMin: ix.wakeBefore(S.ongoing),
           elapsedSleepMin: 0,
+          ...this._labFeedFeat(feeds, start),        // délai repas → endormissement
         },
       });
       nowCases.push({
@@ -1306,6 +1472,7 @@ const Stats = {
           prevSleepMin: ix.dur(ix.prevOf(S.ongoing)),
           prevWakeMin: ix.wakeBefore(S.ongoing),
           elapsedSleepMin: (nowMs - start) / 60000,
+          ...this._labFeedFeat(null, nowMs),         // cf. _labCases : nuls sur la sonde
         },
       });
     }
@@ -1434,6 +1601,11 @@ const Stats = {
           previousSleepDurationMin: r(c.features.prevSleepMin),
           previousWakeDurationMin: r(c.features.prevWakeMin),
           elapsedSleepMin: r(c.features.elapsedSleepMin),
+          minutesSinceLastFeed: r(c.features.sinceFeedMin),
+          lastFeedKind: c.features.feedKind == null ? null : c.features.feedKind,
+          lastBottleMl: c.features.lastBottleMl == null ? null : c.features.lastBottleMl,
+          feedsInPrevious3h: c.features.feeds3h == null ? null : c.features.feeds3h,
+          feedClusterProfile: c.features.feedCluster == null ? null : c.features.feedCluster,
         },
         actual: this._isoLocal(c.realMs),
         predictions,
@@ -1493,8 +1665,9 @@ const Stats = {
       generatedAt: this._isoLocal(lab.nowMs),
       export: {
         purpose: 'LLM analysis of champion/challenger sleep prediction models',
-        privacyMode: 'sleep-only-deidentified',
-        featuresIncluded: ['babyAgeDays', 'localHour', 'previousSleepDurationMin', 'previousWakeDurationMin', 'elapsedSleepMin'],
+        privacyMode: 'sleep-and-feeding-deidentified',
+        featuresIncluded: ['babyAgeDays', 'localHour', 'previousSleepDurationMin', 'previousWakeDurationMin', 'elapsedSleepMin',
+          'minutesSinceLastFeed', 'lastFeedKind', 'lastBottleMl', 'feedsInPrevious3h', 'feedClusterProfile'],
       },
       context: {
         subjectId: this.LAB_SUBJECT_ID,
@@ -1512,6 +1685,9 @@ const Stats = {
         walkForward: 'each prediction uses only data available before the case',
         remainingTarget: 'wake re-predicted at the time M0 had announced, only for episodes that outlasted it',
         promotion: 'never automatic; freezing for confirmation is mechanical, promotion is a human decision',
+        feedTiming: 'feeds are point-in-time logs: no end time is recorded, so minutesSinceLastFeed counts from the logged instant. Feed duration is a tapped preset (5/10/15/20/30), never used as a feature and never converted into a volume',
+        feedFeatureAnchor: 'feeding features are measured at the case anchor (the real wake for onset, the real sleep onset for wake) and are null for the remaining probe, whose anchor is mid-episode: do not pool them across targets',
+        feedFeatureGaps: 'all feeding features are null when no feed is known within 12h before the anchor; lastBottleMl is null when the last feed was breastfeeding',
       },
       models,
       currentPredictions: lab.nowRows.map(row => ({
@@ -1535,6 +1711,7 @@ const Stats = {
         'Look for drift over age/week and conditional effects in cases.',
         'Prefer a simpler model unless the gain is material and stable.',
         'Do not recommend promotion solely from the latest 10 cases.',
+        'The more regular the feeding rhythm, the more minutesSinceLastFeed is collinear with the time-since-wake M0 already uses: judge MF models on the cases where the rhythm breaks (feed clusters, unusually long gaps), not on a global average.',
       ],
     };
   },

@@ -111,6 +111,29 @@ partage sein vs biberon dans le temps**.
 - La **part du biberon** (A2) est le fil rouge : carte principale + tendance sur
   toute la période pour visualiser la bascule.
 
+### `Stats.feedTimeline()` — primitive partagée avec le prédictif
+
+Pendant de `sleepEpisodes()` pour l'alimentation : la liste des repas retenus
+(`tetee` + `biberon`), **triée par instant**, chacun réduit à
+`{ atMs, kind: 'breast'|'bottle', ml }` — bornée par la date de fiabilité du domaine
+repas et par `now`. Le laboratoire prédictif (§3.8 de `RECOS-prediction-sommeil-v5.md`)
+en dérive les caractéristiques de la famille **MF** : délai depuis le dernier repas,
+type, volume du dernier biberon, nombre de repas sur 3 h, profil de grappe
+(`sparse ≤1` / `steady 2` / `cluster ≥3`).
+
+Trois conventions, qui sont des **refus d'inventer** :
+
+1. **aucune fin de repas** n'est enregistrée, et rien ne dit si `ts` est tapé au début
+   ou à la fin → tout délai part de **l'instant du log**. Fabriquer `ts + 15 min`
+   serait une donnée inventée ; et comme un décalage constant ne change pas le
+   classement des voisins d'un k-NN, ça ne coûte rien de s'en passer ;
+2. `duration` d'une tétée est un **preset tapé** (5/10/15/20/30) — presque toujours 15
+   pour ce bébé : étiquette de saisie, pas une mesure. Elle n'est **jamais** une
+   caractéristique, et **jamais** convertie en volume ;
+3. au-delà de **12 h** sans repas connu (même garde-fou que les écarts d'éveil), ce
+   n'est plus un jeûne mais un repas oublié : toutes les caractéristiques passent à
+   `null`. Idem pour `lastBottleMl` après une tétée. **Jamais de valeur bouchée.**
+
 ---
 
 ## B. Couches
@@ -339,9 +362,10 @@ Zéro dépendance, zéro build (comme le reste du dépôt) : un harnais de ~90 l
 | `lab.test.js` §11 | Cas walk-forward du laboratoire : vocabulaire du catalogue (§3.12 — un modèle = une hypothèse falsifiable, M8 déclaré **sans** implémentation et jamais applicable), chaque cas ancré **avant** sa vérité, identités d'erreur (`signedErr`, `absErr = |signedErr|`), **aucune fuite** (deux semaines de dodos en plus ⇒ tous les cas antérieurs identiques, à `id` identique — >2000 prédictions comparées), la sonde `remaining` = exactement le réveil annoncé par M0, jeu trop court ⇒ des cas mais **zéro** prédiction inventée |
 | `lab.test.js` §12 | Gain apparié et cycle de vie (§3.8/§3.10) : `gain = |err(M0)| − |err(Mx)|` recalculé depuis les cas pour **chaque** expérience (pairedN, médiane, P25/P75, victoires + nuls + défaites = n, biais, `firstComparableMs`), convention de signe sur cas fabriqués, gel pour confirmation (déclenché à `FEATURE_CONFIRM_TRIGGER_N`, blocs exploration/confirmation **disjoints et complets**, pas de gel sous `FEATURE_MIN_GAIN_MIN_MS` ni pour un challenger perdant), plafond de 2 confirmations simultanées + file d'attente, échelle des statuts **sans** `active`/`rejected` automatique, semaines non mélangées |
 | `lab.test.js` §13 | Checkpoints reconstructibles (§3.13) : dates et focus (S8 = naissance + 56 j, S10 = M4/M5, S16 = M7, puis revue générale toutes les 4 semaines), **test de reconstruction** — on tronque les événements à T (dodos encore ouverts remis à `end: null`), on recalcule de zéro, et on doit retrouver le même nombre de cas, les mêmes `id`, les mêmes métriques, statuts et gels que la vue « au T » ; monotonie du nombre de cas |
-| `lab.test.js` §14 | Export LLM (§3.14) : schéma versionné (`schemaVersion`, 13 clés), libellés de `conventions` et `analysisGuide` **au mot près**, dés-identification (aucune date de naissance ni vocabulaire de domaine hors sommeil), cohérence entre les métriques exportées et le laboratoire (arrondis compris) |
+| `lab.test.js` §14 | Export LLM (§3.14) : schéma versionné (`schemaVersion`, 13 clés), libellés de `conventions` et `analysisGuide` **au mot près**, dés-identification (aucune date de naissance ; périmètre déclaré = sommeil **+ repas**, et les domaines hors périmètre absents **jusque dans les libellés** ; côté/durée de tétée absents des **données**, jeu de caractéristiques figé), cohérence entre les métriques exportées et le laboratoire (arrondis compris) |
 | `lab.test.js` §15 | Primitives internes du labo : `_quantileSorted` ≡ `_quantile`, `_lowerBound`, `_weightedMedian`, frontières de `_labSlot`/`_labIsNight`, `_labKnn` (médiane des 5 voisins, `null` si la caractéristique manque ou si la fenêtre est trop courte), `counts` |
-| `guards.test.js` §7 | Gardes sur les sources : **aucun bloc de démo**, `CACHE` du SW = max des `?v=N` et `ASSETS` ≡ URLs versionnées d'`index.html`, division par un jour en ms toujours en `Math.round`, version d'export dérivée de l'asset, `domainStart`/`firstCompleteDay` bien passés, découpe à minuit non dupliquée, `stats.js` pur et surface publique stable (`sleepPrediction`/`sleepLab`/`labExport` inclus), chaque anomalie affichée, `LAB_STATUS` d'`app.js` ≡ `Stats.LAB_STATUS_ORDER`, laboratoire **non persisté** (§3.11) |
+| `lab.test.js` §16 | **Rythme des repas (famille MF)** : `feedTimeline` (tri, tombstones, `ts` illisible, futur et pré-fiabilité exclus, `ml` des biberons seulement), `_labFeedFeat` (délai depuis l'instant **logué**, fenêtre de 3 h inclusive, bornes des profils `sparse`/`steady`/`cluster`, plafond de 12 h → tout `null`, aucun volume après une tétée), caractéristiques mesurées **à l'ancre du cas** — recalculées par un second algorithme sur les >200 cas concernés — et **volontairement absentes** de la sonde `remaining`, modèles MF muets faute de caractéristique (jamais `active` tout seuls, aucune durée de tétée dans leurs paramètres), les 3 profils de grappe réellement présents dans le jeu de test, checkpoint S3 en tête, et **aucune fuite** (2 semaines de repas en plus ⇒ toutes les caractéristiques antérieures identiques) |
+| `guards.test.js` §7 | Gardes sur les sources : **aucun bloc de démo**, `CACHE` du SW = max des `?v=N` et `ASSETS` ≡ URLs versionnées d'`index.html`, division par un jour en ms toujours en `Math.round`, version d'export dérivée de l'asset, `domainStart`/`firstCompleteDay` bien passés, découpe à minuit non dupliquée, `stats.js` pur et surface publique stable (`feedTimeline`/`sleepPrediction`/`sleepLab`/`labExport` inclus), chaque anomalie affichée, `LAB_STATUS` d'`app.js` ≡ `Stats.LAB_STATUS_ORDER`, laboratoire **non persisté** (§3.11) |
 
 ### Hors périmètre (assumé)
 

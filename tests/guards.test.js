@@ -89,7 +89,7 @@ module.exports = ({ suite, test, eq, deepEq, ok, Stats, ROOT, fs, path }) => {
   });
 
   test('surface publique de stats.js (contrat pour app.js et le prédictif)', () => {
-    for (const k of ['compute', 'sleepSegments', 'sleepEpisodes', 'daysWindow', 'startOfDay', 'addDays', 'dayKey', 'isSameDay',
+    for (const k of ['compute', 'sleepSegments', 'sleepEpisodes', 'feedTimeline', 'daysWindow', 'startOfDay', 'addDays', 'dayKey', 'isSameDay',
       'sleepPrediction', 'sleepLab', 'labExport']) {
       eq(typeof Stats[k], 'function', `Stats.${k}`);
     }

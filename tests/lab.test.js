@@ -40,6 +40,37 @@ module.exports = ({ suite, test, eq, near, deepEq, ok, Stats }) => {
      permet le test d'absence de fuite. */
   let rng = 12345;
   const rnd = () => { rng = (rng * 1103515245 + 12345) % 2147483648; return rng / 2147483648; };
+
+  /* Repas : SECOND générateur, strictement indépendant du premier — sa propre
+     graine, son propre curseur, son propre compteur d'ids, tous remis à zéro à
+     chaque appel. Emprunter `rnd()` décalerait la séquence des dodos et
+     changerait le verdict de tous les tests ci-dessous. Comme les dodos, il
+     part d'une origine fixe et s'arrête à `untilMs` : `feeds(t2)` prolonge donc
+     `feeds(t1)` à l'identique.
+     Rythme volontairement RÉGULIER (2 h 20 → 3 h 20) et resserré de 18 h à
+     22 h : c'est cette grappe du soir qui fait exister les trois profils de
+     MF4 — et c'est là que le rythme « casse », donc là où un modèle
+     alimentaire peut apporter quelque chose que l'heure ne dit pas déjà. */
+  let fseq = 0, frng = 987654321;
+  const frnd = () => { frng = (frng * 1103515245 + 12345) % 2147483648; return frng / 2147483648; };
+  function feeds(untilMs, from = new Date(2026, 7, 6, 6, 0)) {
+    frng = 987654321; fseq = 0;
+    const evs = [];
+    let t = from.getTime();
+    for (;;) {
+      const h = new Date(t).getHours();
+      t += Math.round((h >= 18 && h < 22) ? 45 + frnd() * 40 : 140 + frnd() * 60) * 60000;
+      if (t >= untilMs) return evs;
+      evs.push(frnd() < 0.35
+        // Biberon : `ml` toujours écrit (c'est ce que fait le formulaire).
+        ? { id: `f${++fseq}`, action: 'biberon', ts: iso(new Date(t)), data: { ml: 60 + Math.round(frnd() * 6) * 10 } }
+        // Tétée : `duration` est un preset tapé, JAMAIS une mesure — il est ici
+        // pour vérifier qu'aucun modèle ne s'en sert (ni comme durée, ni
+        // converti en volume).
+        : { id: `f${++fseq}`, action: 'tetee', ts: iso(new Date(t)), data: { side: 'gauche', duration: 15 } });
+    }
+  }
+
   function history(untilMs, from = new Date(2026, 7, 11, 7, 0)) {
     rng = 12345;
     const evs = [];
@@ -52,7 +83,7 @@ module.exports = ({ suite, test, eq, near, deepEq, ok, Stats }) => {
       evs.push(sl(new Date(startMs), new Date(endMs)));
       t = endMs;
     }
-    return { evs, lastMs: t };
+    return { evs: evs.concat(feeds(untilMs)), lastMs: t };
   }
   const H = history(new Date(2026, 11, 1).getTime());     // 11 août → 1er déc (bébé ~S16)
   const NOW = new Date(H.lastMs + 40 * 60000);
@@ -82,7 +113,8 @@ module.exports = ({ suite, test, eq, near, deepEq, ok, Stats }) => {
     eq(CH, 'M0', 'champion');
     eq(Stats.LAB_MODELS.filter(m => m.champion).length, 1, 'un seul champion');
     for (const m of Stats.LAB_MODELS) {
-      ok(/^M\d+$/.test(m.id), `id ${m.id}`);
+      // Deux familles d'ids : `M*` (sommeil seul) et `MF*` (rythme des repas).
+      ok(/^MF?\d+$/.test(m.id), `id ${m.id}`);
       ok(typeof m.label === 'string' && m.label, `label de ${m.id}`);
       eq(typeof m.version, 'number', `version de ${m.id}`);
       ok(Array.isArray(m.targets) && Array.isArray(m.features), `targets/features de ${m.id}`);
@@ -408,23 +440,52 @@ module.exports = ({ suite, test, eq, near, deepEq, ok, Stats }) => {
     ok(/never automatic/.test(X.conventions.promotion), 'promotion jamais automatique');
     ok(/not prediction quality/.test(X.conventions.maturityBadge), 'le recul n’est pas une précision');
     ok(/only data available before the case/.test(X.conventions.walkForward), 'walk-forward expliqué');
-    eq(X.analysisGuide.length, 7, 'consignes de lecture');
+    eq(X.analysisGuide.length, 8, 'consignes de lecture');
     ok(X.analysisGuide.some(s => /paired cases/.test(s)), 'comparer seulement sur les cas appariés');
+    ok(X.analysisGuide.some(s => /collinear/.test(s)), 'le piège de colinéarité repas ↔ éveil est dit');
+    ok(/never used as a feature and never converted into a volume/.test(X.conventions.feedTiming),
+      'la durée de tétée est déclarée inutilisée');
+    ok(/do not pool them across targets/.test(X.conventions.feedFeatureAnchor), 'ancre des features repas');
+    ok(/null when no feed is known/.test(X.conventions.feedFeatureGaps), 'trous de saisie déclarés');
   });
 
-  test('dé-identification : sommeil seulement, âge en jours, aucune date de naissance', () => {
+  test('dé-identification : sommeil + repas seulement, âge en jours, aucune date de naissance', () => {
     const txt = JSON.stringify(X);
     const p2 = n => String(n).padStart(2, '0');
     eq(X.context.subjectId, 'baby-1', 'identifiant neutre');
-    eq(X.export.privacyMode, 'sleep-only-deidentified', 'mode de confidentialité');
+    // Le périmètre déclaré doit suivre le périmètre réel : les modèles MF
+    // regardent l'alimentation, donc l'export le DIT au lieu de le maquiller.
+    eq(X.export.privacyMode, 'sleep-and-feeding-deidentified', 'mode de confidentialité');
     ok(X.context.ageDaysAtExport > 100, `âge en jours (${X.context.ageDaysAtExport})`);
     eq(X.context.birthDate, undefined, 'aucune date de naissance');
     ok(!txt.includes(`${BIRTH.getFullYear()}-${p2(BIRTH.getMonth() + 1)}-${p2(BIRTH.getDate())}`),
       'le jour de naissance n’apparaît nulle part');
     ok(!/1970-01-01/.test(txt), 'aucune date sentinelle');
-    for (const mot of ['tetee', 'biberon', 'couche', 'temperature', 'medicament', 'bain', 'appris']) {
+    // Les domaines hors périmètre restent totalement absents, jusque dans les
+    // libellés des modèles.
+    for (const mot of ['couche', 'temperature', 'medicament', 'bain', 'appris']) {
       ok(!new RegExp(mot, 'i').test(txt), `aucune trace du domaine ${mot}`);
     }
+    // L'alimentation entre par les caractéristiques déclarées, pas par les
+    // événements : aucun repas brut, aucun nom d'action de l'app, aucune durée
+    // de tétée ni côté de tétée dans les données. (Les libellés des modèles MF,
+    // eux, ont le droit de dire « biberon » : c'est de la documentation.)
+    eq(X.events, undefined, 'aucun journal brut exporté');
+    const données = JSON.stringify([X.cases, X.currentPredictions, X.performance,
+      X.pairwiseComparisonsVsChampion, X.weeklyEvolution]);
+    for (const mot of ['tetee', 'biberon', 'sein', 'gauche', 'droite']) {
+      ok(!new RegExp(mot, 'i').test(données), `aucune trace de « ${mot} » dans les données`);
+    }
+    deepEq(Object.keys(X.cases[0].features).sort(), ['elapsedSleepMin', 'feedClusterProfile',
+      'feedsInPrevious3h', 'lastBottleMl', 'lastFeedKind', 'localHour', 'minutesSinceLastFeed',
+      'previousSleepDurationMin', 'previousWakeDurationMin'], 'jeu de caractéristiques figé');
+    deepEq(X.export.featuresIncluded.filter(f => /feed|Bottle/i.test(f)),
+      ['minutesSinceLastFeed', 'lastFeedKind', 'lastBottleMl', 'feedsInPrevious3h', 'feedClusterProfile'],
+      'les 5 caractéristiques alimentaires sont annoncées');
+    const cas = X.cases.filter(c => c.features.minutesSinceLastFeed != null);
+    ok(cas.length > 100, `cas porteurs d’une caractéristique alimentaire (${cas.length})`);
+    ok(cas.every(c => c.features.lastFeedKind === 'breast' || c.features.lastFeedKind === 'bottle'),
+      'type de repas sous un nom neutre');
   });
 
   test('les métriques exportées sont cohérentes avec la vue', () => {
@@ -466,7 +527,7 @@ module.exports = ({ suite, test, eq, near, deepEq, ok, Stats }) => {
     });
     X.experiments.forEach(e => {
       eq(e.decision, null, 'aucune décision inventée');
-      ok(/^M\d+-v\d+-(onset|wake|remaining)$/.test(e.experimentId), `id d’expérience ${e.experimentId}`);
+      ok(/^MF?\d+-v\d+-(onset|wake|remaining)$/.test(e.experimentId), `id d’expérience ${e.experimentId}`);
       ok(e.exploration && e.exploration.pairedN > 0, `${e.experimentId} : bloc exploratoire`);
     });
   });
@@ -522,6 +583,126 @@ module.exports = ({ suite, test, eq, near, deepEq, ok, Stats }) => {
     eq(Stats._labKnn({ features: {}, featMap }, win, 'prevSleepMin'), null, 'feature du cas inconnue → null');
     eq(Stats._labKnn(ctx, win.slice(0, Stats.LAB_KNN_MIN_N - 1), 'prevSleepMin'), null, 'fenêtre trop courte → null');
     eq(Stats._labKnn(ctx, win, 'prevWakeMin'), null, 'feature absente des échantillons → null');
+  });
+
+  suite('16. Laboratoire — rythme des repas (famille MF)');
+
+  test('feedTimeline : les repas connus, triés, sans rien fabriquer', () => {
+    const F = Stats.feedTimeline([
+      { id: 'a', action: 'biberon', ts: iso(new Date(2026, 7, 12, 10)), data: { ml: 90 } },
+      { id: 'b', action: 'tetee', ts: iso(new Date(2026, 7, 12, 8)), data: { duration: 15, side: 'gauche' } },
+      { id: 'c', action: 'biberon', ts: iso(new Date(2026, 7, 12, 9)), data: { ml: 'nawak' } },
+      { id: 'd', action: 'tetee', ts: iso(new Date(2026, 7, 12, 11)), data: {}, deleted: true },
+      { id: 'e', action: 'couche', ts: iso(new Date(2026, 7, 12, 9, 30)), data: { type: 'pipi' } },
+      { id: 'f', action: 'tetee', ts: 'nawak', data: {} },
+      { id: 'g', action: 'biberon', ts: iso(new Date(2026, 7, 12, 23)), data: { ml: 60 } },   // après `now`
+      { id: 'h', action: 'tetee', ts: iso(new Date(2026, 7, 5, 12)), data: {} },              // avant la fiabilité repas
+    ], { nowMs: new Date(2026, 7, 12, 12).getTime(), domainStart: DOMAIN });
+    deepEq(F.map(f => new Date(f.atMs).getHours()), [8, 9, 10], 'seuls les repas connus, triés');
+    deepEq(F.map(f => f.kind), ['breast', 'bottle', 'bottle'], 'type');
+    deepEq(F.map(f => f.ml), [null, null, 90], 'ml : biberons seulement, jamais déduit d’une durée');
+  });
+
+  test('_labFeedFeat : ce qu’on sait à un instant donné, et rien d’ultérieur', () => {
+    const at = (h, m = 0) => new Date(2026, 7, 12, h, m).getTime();
+    const F = Stats.feedTimeline([
+      { id: '1', action: 'tetee', ts: iso(new Date(2026, 7, 12, 6)), data: { duration: 15 } },
+      { id: '2', action: 'biberon', ts: iso(new Date(2026, 7, 12, 7)), data: { ml: 80 } },
+      { id: '3', action: 'tetee', ts: iso(new Date(2026, 7, 12, 8)), data: { duration: 15 } },
+      { id: '4', action: 'biberon', ts: iso(new Date(2026, 7, 12, 15)), data: { ml: 120 } },
+    ], { nowMs: at(23), domainStart: DOMAIN });
+
+    const f9 = Stats._labFeedFeat(F, at(9));
+    eq(f9.sinceFeedMin, 60, 'délai depuis le dernier repas NOTÉ (aucune fin de repas inventée)');
+    eq(f9.feedKind, 'breast', 'type du dernier repas');
+    eq(f9.lastBottleMl, null, 'pas de volume après une tétée — aucune conversion depuis la durée');
+    eq(f9.feeds3h, 3, 'repas des 3 h précédentes');
+    eq(f9.feedCluster, 'cluster', '≥ 3 → grappe');
+    // Bornes des profils, et borne haute de la fenêtre incluse (7 h est à 3 h pile).
+    eq(Stats._labFeedFeat(F, at(10)).feeds3h, 2, 'fenêtre de 3 h inclusive');
+    eq(Stats._labFeedFeat(F, at(10)).feedCluster, 'steady', '2 → rythme régulier');
+    eq(Stats._labFeedFeat(F, at(11, 1)).feedCluster, 'sparse', '≤ 1 → clairsemé');
+    // Le futur n'existe pas : à 14 h le biberon de 15 h n'est pas visible.
+    eq(Stats._labFeedFeat(F, at(14)).feedKind, 'breast', 'dernier repas connu à 14 h');
+    eq(Stats._labFeedFeat(F, at(14)).feeds3h, 0, 'aucun repas sur les 3 h précédentes');
+    eq(Stats._labFeedFeat(F, at(21)).lastBottleMl, 120, 'volume du dernier biberon');
+    // Au-delà de 12 h ce n'est plus un jeûne, c'est un repas qu'on a oublié de noter.
+    eq(Stats._labFeedFeat(F, new Date(2026, 7, 13, 3).getTime()).sinceFeedMin, 720, '12 h pile : encore su');
+    const trou = Stats._labFeedFeat(F, new Date(2026, 7, 13, 4).getTime());
+    deepEq([trou.sinceFeedMin, trou.feedKind, trou.lastBottleMl, trou.feeds3h, trou.feedCluster],
+      [null, null, null, null, null], '13 h de trou → tout inconnu, aucune valeur bouchée');
+    eq(Stats._labFeedFeat(F, at(5)).feedKind, null, 'avant le premier repas connu');
+    eq(Stats._labFeedFeat([], at(9)).feedKind, null, 'aucun repas du tout');
+  });
+
+  test('les caractéristiques alimentaires sont mesurées à l’ancre du cas', () => {
+    const F = Stats.feedTimeline(H.evs, { nowMs: NOW.getTime(), domainStart: DOMAIN });
+    ok(F.length > 500, `repas dans l’historique de test (${F.length})`);
+    const avec = L.cases.filter(c => c.target !== 'remaining' && c.features.sinceFeedMin != null);
+    ok(avec.length > 200, `cas porteurs d’un délai (${avec.length})`);
+    for (const c of avec) {
+      // Recalcul indépendant : le dernier repas noté AVANT l'ancre — le réveil
+      // pour `onset`, l'endormissement pour `wake` (donc bien le délai
+      // « repas → endormissement » sur la durée de sommeil).
+      const dernier = F.filter(f => f.atMs <= c.anchorMs).pop();
+      near(c.features.sinceFeedMin, (c.anchorMs - dernier.atMs) / 60000, 1e-9, `${c.id} : délai`);
+      eq(c.features.feedKind, dernier.kind, `${c.id} : type`);
+      eq(c.features.lastBottleMl, dernier.kind === 'bottle' ? dernier.ml : null, `${c.id} : volume`);
+      eq(c.features.feeds3h, F.filter(f => f.atMs <= c.anchorMs && c.anchorMs - f.atMs <= 3 * 3600000).length,
+        `${c.id} : repas sur 3 h`);
+    }
+    // La sonde `remaining` est ancrée au MILIEU du dodo : y renseigner des
+    // caractéristiques alimentaires laisserait croire qu'on peut les comparer
+    // aux échantillons, qui mesurent les leurs à l'endormissement.
+    const rem = L.cases.filter(c => c.target === 'remaining');
+    ok(rem.length > 20, `sondes (${rem.length})`);
+    ok(rem.every(c => c.features.sinceFeedMin == null && c.features.feedCluster == null),
+      'aucune caractéristique alimentaire sur la sonde `remaining`');
+  });
+
+  test('les modèles MF ne se prononcent que quand la caractéristique existe', () => {
+    const MF = ['MF1', 'MF2', 'MF3', 'MF4'];
+    for (const id of MF) {
+      const m = Stats._labModel(id);
+      ok(m.predict, `${id} : instancié`);
+      deepEq(m.targets, ['onset', 'wake'], `${id} : jamais sur la sonde remaining`);
+      eq(L.view.status[id] === 'active', false, `${id} : jamais actif tout seul (shadow d’abord)`);
+      ok(!/dur(é|e)e|duration/i.test(JSON.stringify([m.features, m.parameters])),
+        `${id} : la durée d’un repas n’est pas une caractéristique`);
+    }
+    ok(L.cases.filter(c => c.features.sinceFeedMin == null).every(c => MF.every(id => !c.preds[id])),
+      'aucune prédiction MF sans repas connu');
+    // MF3 est muet après une tétée : le volume n'existe pas, et on ne le déduit
+    // pas de la durée. Teste « gros repas → long sommeil » au lieu de le supposer.
+    const tetees = L.cases.filter(c => c.features.feedKind === 'breast');
+    ok(tetees.length > 100, `cas après une tétée (${tetees.length})`);
+    ok(tetees.every(c => !c.preds.MF3), 'MF3 muet quand le dernier repas était une tétée');
+    ok(L.cases.some(c => c.preds.MF3), 'MF3 se prononce après un biberon');
+    // Les trois profils de grappe existent vraiment dans le jeu de test :
+    // sinon MF4 serait « vert » sans avoir jamais été mis à l’épreuve.
+    const prof = {};
+    L.cases.forEach(c => { if (c.features.feedCluster) prof[c.features.feedCluster] = (prof[c.features.feedCluster] || 0) + 1; });
+    ok(prof.sparse > 0 && prof.steady > 0 && prof.cluster > 0, `profils observés ${JSON.stringify(prof)}`);
+    // Le rendez-vous de lecture de l'alimentation passe AVANT tous les autres.
+    eq(Stats.LAB_CHECKPOINT_WEEKS[0], 3, 'S3 en tête des checkpoints');
+    deepEq(L.checkpoints.find(c => c.key === 'S3').focusModels, MF, 'S3 = checkpoint alimentation');
+  });
+
+  test('AUCUNE FUITE : ajouter des repas postérieurs ne change aucune caractéristique passée', () => {
+    const plus = history(new Date(2026, 11, 15).getTime());
+    const L2 = Stats.sleepLab(plus.evs, {
+      now: new Date(plus.lastMs + 40 * 60000), domainStart: DOMAIN, birth: BIRTH,
+    });
+    const byId = new Map(L2.cases.map(c => [c.id, c]));
+    let vus = 0;
+    for (const c of L.cases) {
+      const c2 = byId.get(c.id);
+      for (const k of ['sinceFeedMin', 'feedKind', 'lastBottleMl', 'feeds3h', 'feedCluster']) {
+        eq(c2.features[k], c.features[k], `${c.id} : ${k} inchangé`);
+      }
+      if (c.features.sinceFeedMin != null) vus++;
+    }
+    ok(vus > 200, `caractéristiques alimentaires comparées (${vus})`);
   });
 
   test('les compteurs du résumé d’export sont vrais', () => {
