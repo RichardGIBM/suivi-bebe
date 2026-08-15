@@ -253,6 +253,19 @@ stats) — les stats sont consultées ponctuellement, la saisie reste l'onglet d
   construction (barres, axes, contraste clair/sombre) au moment du code.
 - Barres = valeur par jour ; aujourd'hui (jour partiel) **hachuré/atténué** pour
   ne pas induire en erreur.
+- **Étiquettes de valeur, cadence par période** : sur la courbe « Part du biberon »,
+  le % est écrit un jour sur `every`, compté **en partant du dernier jour** (7 j → 1,
+  14 j → 2, 30 j → 5). Le jour le plus récent est donc toujours étiqueté (et seul à
+  porter l'unité « % »). Un jour sans donnée n'a pas d'étiquette — jamais un 0 inventé.
+- **Échelle tronquée ⇒ jamais de barre.** Le « Sommeil total /j » est lu sur une bande
+  **8 h → 20 h** (une journée de bébé n'en sort pas) : 12 h d'amplitude au lieu de 18 h,
+  donc une lecture bien plus fine. Mais une barre dont la base n'est pas zéro n'a plus
+  une longueur proportionnelle à sa valeur (biais des « barres tronquées ») : la valeur
+  est donc encodée par une **position** — un point par jour, relié par une ligne fine
+  (`statChartBand`). Un jour hors bande (le jour en cours, encore sous le plancher) est
+  ramené sur la bordure en **cercle creux** et la ligne s'y interrompt : « hors échelle »
+  se voit, aucun faux niveau n'est tracé. Les autres cartes de durée gardent des barres
+  ancrées à 0.
 - Aucune animation superflue ; lecture instantanée.
 
 *(Alternative écartée : une simple section sous « Suivi ». Un onglet dédié garde la

@@ -1112,7 +1112,11 @@ function statChartStacked(seinA, bibA, o = {}) {
   return `<svg viewBox="0 0 ${W} ${H}" class="spark" preserveAspectRatio="xMidYMid meet" role="img" aria-hidden="true">${body}</svg>`;
 }
 
-/* Courbe (%) avec axes gradués 0 / 50 / 100 + valeur de fin. */
+/* Courbe (%) avec axes gradués 0 / 50 / 100 + valeurs écrites sur la courbe.
+   `every` = cadence des étiquettes, comptée EN PARTANT DU DERNIER JOUR (1 = tous
+   les jours, 2 = un jour sur deux, 5 = un jour sur cinq) : la valeur du jour le
+   plus récent est donc toujours écrite, et l'espacement reste constant quelle que
+   soit la période. L'unité (« % ») n'est écrite qu'une fois, sur ce dernier point. */
 function statChartLine(values, o = {}) {
   const W = o.W || 300, H = o.H || 78, n = values.length || 1, color = o.color || CHART.biberon, max = o.max || 100;
   const hasX = !!o.labels, ML = o.ML != null ? o.ML : 22, MR = 8, MT = 10, MB = hasX ? 14 : 6;
@@ -1139,11 +1143,66 @@ function statChartLine(values, o = {}) {
   values.forEach((v, i) => { if (v == null) flush(); else seg.push(`${xAt(i).toFixed(1)},${yAt(v).toFixed(1)}`); });
   flush();
   let li = -1; for (let i = values.length - 1; i >= 0; i--) if (values[i] != null) { li = i; break; }
-  if (li >= 0) {
-    const x = xAt(li), y = yAt(values[li]);
-    body += `<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="3" fill="${color}"/>`;
-    body += `<text x="${(x - 5).toFixed(1)}" y="${(y - 6).toFixed(1)}" text-anchor="end" font-size="10" font-weight="700" fill="${color}">${Math.round(values[li])} %</text>`;
+  const every = Math.max(1, Math.round(o.every || 0));
+  // Étiquettes intermédiaires : au-dessus du point, ou dessous quand le point est
+  // trop haut pour que le texte tienne dans le cadre (0 % et 100 % existent).
+  if (o.every) for (let i = li - every; i >= 0; i -= every) {
+    if (values[i] == null) continue;   // pas de donnée → pas d'étiquette (jamais un 0 inventé)
+    const x = xAt(i), y = yAt(values[i]), haut = y - MT < 11;
+    body += `<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="2" fill="${color}"/>`;
+    body += `<text x="${x.toFixed(1)}" y="${(haut ? y + 10 : y - 5).toFixed(1)}" text-anchor="middle" font-size="8" font-weight="700" fill="${color}" font-variant-numeric="tabular-nums">${Math.round(values[i])}</text>`;
   }
+  if (li >= 0) {
+    const x = xAt(li), y = yAt(values[li]), haut = y - MT < 12;
+    body += `<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="3" fill="${color}"/>`;
+    body += `<text x="${(x - 5).toFixed(1)}" y="${(haut ? y + 11 : y - 6).toFixed(1)}" text-anchor="end" font-size="10" font-weight="700" fill="${color}">${Math.round(values[li])} %</text>`;
+  }
+  if (hasX) o.labels.forEach((l, i) => { if (!l) return; const anc = i === 0 ? 'start' : (i === n - 1 ? 'end' : 'middle'); body += `<text x="${xAt(i).toFixed(1)}" y="${(H - 3).toFixed(1)}" text-anchor="${anc}" font-size="8" fill="${CHART.ink}">${l}</text>`; });
+  return `<svg viewBox="0 0 ${W} ${H}" class="spark" preserveAspectRatio="xMidYMid meet" role="img" aria-hidden="true">${body}</svg>`;
+}
+
+/* Série de durées sur une échelle TRONQUÉE (sommeil total : 8 h → 20 h, une
+   journée de bébé ne sort jamais de cette bande) : 12 h d'amplitude au lieu de
+   18 h, donc une lecture bien plus fine.
+   Une échelle qui ne part pas de zéro interdit la barre — sa longueur ne serait
+   plus proportionnelle à la valeur (le biais de lecture classique des « barres
+   tronquées »). La valeur est donc encodée par une POSITION : un point par jour,
+   relié par une ligne fine. Un jour hors bande (le jour en cours, encore sous le
+   plancher) est ramené sur la bordure et dessiné en cercle CREUX, et la ligne
+   s'y interrompt : « hors échelle » se voit, aucun faux niveau n'est tracé. */
+function statChartBand(values, o = {}) {
+  const color = o.color || CHART.vert, W = o.W || 150, H = o.H || 74;
+  const n = values.length || 1, atten = o.atten || new Set(), hasX = !!o.labels;
+  const min = o.min || 0, max = o.max || 1440, step = o.step || 240;
+  const ticks = []; for (let v = min; v <= max + 1e-6; v += step) ticks.push(v);
+  const labelW = Math.max(...ticks.map(v => durAxis(v).length));
+  const ML = o.ML != null ? o.ML : Math.max(16, Math.round(labelW * 5.6 + 5));
+  const MT = 8, MB = hasX ? 14 : 6, MR = 4;
+  const plotW = W - ML - MR, plotH = H - MT - MB;
+  const xAt = i => ML + (n === 1 ? plotW / 2 : (i / (n - 1)) * plotW);
+  const yAt = v => MT + plotH - ((Math.max(min, Math.min(max, v)) - min) / (max - min)) * plotH;
+  const dedans = v => v != null && v >= min && v <= max;
+  const r = n > 20 ? 1.7 : (n > 10 ? 2.2 : 2.8);
+  let body = '';
+  ticks.forEach(v => {
+    const gy = yAt(v);
+    body += `<line x1="${ML}" y1="${gy.toFixed(1)}" x2="${W}" y2="${gy.toFixed(1)}" stroke="${CHART.grid}" stroke-width="1"${(v === min || v === max) ? '' : ' stroke-dasharray="3 3"'}/>`;
+    body += `<text x="${(ML - 3).toFixed(1)}" y="${(gy + 3).toFixed(1)}" text-anchor="end" font-size="8" fill="${CHART.ink}">${durAxis(v)}</text>`;
+  });
+  let seg = [];
+  const flush = () => {
+    if (seg.length > 1) body += `<polyline points="${seg.join(' ')}" fill="none" stroke="${color}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" stroke-opacity="0.5"/>`;
+    seg = [];
+  };
+  values.forEach((v, i) => { if (dedans(v)) seg.push(`${xAt(i).toFixed(1)},${yAt(v).toFixed(1)}`); else flush(); });
+  flush();
+  values.forEach((v, i) => {
+    if (v == null) return;
+    const x = xAt(i).toFixed(1), y = yAt(v).toFixed(1), op = atten.has(i) ? ' opacity="0.45"' : '';
+    body += dedans(v)
+      ? `<circle cx="${x}" cy="${y}" r="${r}" fill="${color}"${op}/>`
+      : `<circle cx="${x}" cy="${y}" r="${r}" fill="#fff" stroke="${color}" stroke-width="1.4"${op}/>`;
+  });
   if (hasX) o.labels.forEach((l, i) => { if (!l) return; const anc = i === 0 ? 'start' : (i === n - 1 ? 'end' : 'middle'); body += `<text x="${xAt(i).toFixed(1)}" y="${(H - 3).toFixed(1)}" text-anchor="${anc}" font-size="8" fill="${CHART.ink}">${l}</text>`; });
   return `<svg viewBox="0 0 ${W} ${H}" class="spark" preserveAspectRatio="xMidYMid meet" role="img" aria-hidden="true">${body}</svg>`;
 }
@@ -1236,7 +1295,8 @@ function renderStats() {
     card({ // 2 ★ Part du biberon
       wide: true, title: 'Part du biberon', hero: pct(pe.bottleShare == null ? null : pe.bottleShare * 100),
       sub: 'du lait donné au biberon',
-      chart: statChartLine(shareA, { color: CHART.biberon, labels, W: 300, H: 80 }),
+      // Cadence des étiquettes : 7 j → chaque jour, 14 j → 1/2, 30 j → 1/5.
+      chart: statChartLine(shareA, { color: CHART.biberon, labels, W: 300, H: 80, every: statsPeriod <= 7 ? 1 : (statsPeriod <= 14 ? 2 : 5) }),
     }),
     card({ // 3 Volume bu (biberon, bleu)
       title: 'Volume bu', hero: `${f0(av.volumeMl)}`, sub: 'ml / j (biberon)',
@@ -1246,9 +1306,9 @@ function renderStats() {
       title: 'Temps au sein', hero: dur(av.teteeDurMin), sub: '/ j (tétées)',
       chart: statChartBars(teteeDurA, { color: CHART.sein, atten: attFeeds, labels, W: 150, H: 74, dur: true }),
     }),
-    card({ // 5 Sommeil total
+    card({ // 5 Sommeil total — échelle tronquée 8 h → 20 h (bande jamais dépassée)
       title: 'Sommeil', hero: dur(av.sleepMin), sub: '/ j',
-      chart: statChartBars(sleepA, { color: CHART.vert, atten: attSleep, labels, W: 150, H: 74, dur: true }),
+      chart: statChartBand(sleepA, { color: CHART.vert, atten: attSleep, labels, W: 150, H: 74, min: 480, max: 1200, step: 240 }),
     }),
     card({ // 6 Plus long sommeil
       title: 'Plus long sommeil', hero: dur(av.longestSleepMin), sub: '/ j en moyenne',
