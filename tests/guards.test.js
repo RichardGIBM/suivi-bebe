@@ -129,6 +129,34 @@ module.exports = ({ suite, test, eq, deepEq, ok, Stats, ROOT, fs, path }) => {
     ok(m8 && !m8.predict, 'M8 déclaré sans implémentation');
   });
 
+  test('aucune suppression sans confirmation (point de passage unique)', () => {
+    // La suppression est un soft-delete propagé aux deux téléphones et rien ne
+    // réaffiche un tombstone : côté utilisateur c'est définitif. Un seul appel à
+    // Store.remove dans app.js, à l'intérieur d'askDelete → aucun bouton ne peut
+    // supprimer sans poser la question.
+    const appels = codeLines(SRC.app).filter(l => /Store\.remove\(/.test(l.txt));
+    eq(appels.length, 1, `un seul appel à Store.remove (lignes ${appels.map(a => a.n).join(', ')})`);
+    const debut = SRC.app.split('\n').findIndex(l => /^function askDelete\(/.test(l)) + 1;
+    ok(debut > 0, 'app.js : function askDelete');
+    const fin = SRC.app.split('\n').findIndex((l, i) => i > debut - 1 && /^\}/.test(l)) + 1;
+    ok(appels[0].n > debut && appels[0].n < fin, `l’appel (ligne ${appels[0].n}) est dans askDelete (${debut}-${fin})`);
+
+    // Chaque bouton « Supprimer » d'une feuille passe par askDelete (directement
+    // ou via une fonction locale qui l'appelle).
+    codeLines(SRC.app).filter(l => /getElementById\('del'\)\.onclick/.test(l.txt))
+      .forEach(l => ok(!/Store\.remove/.test(l.txt), `ligne ${l.n} : bouton del sans Store.remove direct`));
+
+    // La boîte de dialogue existe vraiment (sinon askDelete plante au premier tap).
+    for (const id of ['confirmBackdrop', 'confirmIcon', 'confirmTitle', 'confirmSub', 'confirmYes', 'confirmNo']) {
+      ok(new RegExp(`id="${id}"`).test(SRC.index), `index.html : #${id}`);
+      ok(new RegExp(`'${id}'`).test(SRC.app), `app.js utilise #${id}`);
+    }
+    ok(/\.confirm-backdrop \{/.test(SRC.styles), 'styles.css : .confirm-backdrop');
+    // Au-dessus de la feuille (50) et du popover (60), sous le toast (100).
+    const z = +(SRC.styles.match(/\.confirm-backdrop \{[^}]*z-index: (\d+)/) || [])[1];
+    ok(z > 60 && z < 100, `z-index de la confirmation entre le popover et le toast (${z})`);
+  });
+
   test('les types d’anomalies de stats.js sont tous affichés par app.js', () => {
     const q = Object.keys(Stats.compute([], { periodDays: 7, now: new Date(2026, 7, 13, 12, 0) }).quality);
     ok(q.length >= 7, `types d’anomalies (${q.length})`);

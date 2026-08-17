@@ -14,7 +14,7 @@
   <meta name="apple-mobile-web-app-status-bar-style" content="default" />
   <meta name="apple-mobile-web-app-title" content="Suivi Bébé" />
 
-  <link rel="stylesheet" href="styles.css?v=30" />
+  <link rel="stylesheet" href="styles.css?v=33" />
 </head>
 <body>
   <!-- Indicateur "tirer pour rafraîchir" -->
@@ -116,6 +116,20 @@
     </div>
   </div>
 
+  <!-- Confirmation de suppression — se superpose au bottom sheet, qui reste
+       ouvert derrière : « Annuler » ne fait donc rien perdre de la saisie. -->
+  <div class="confirm-backdrop" id="confirmBackdrop" hidden>
+    <div class="confirm" role="alertdialog" aria-modal="true" aria-labelledby="confirmTitle" aria-describedby="confirmSub">
+      <div class="confirm-icon" id="confirmIcon">🗑️</div>
+      <div class="confirm-title" id="confirmTitle"></div>
+      <div class="confirm-sub" id="confirmSub"></div>
+      <div class="sheet-actions">
+        <button class="btn btn-ghost" id="confirmNo">Annuler</button>
+        <button class="btn btn-danger" id="confirmYes">Supprimer</button>
+      </div>
+    </div>
+  </div>
+
   <!-- Toast -->
   <div class="toast" id="toast" hidden></div>
 
@@ -125,7 +139,7 @@
   <script src="vendor/supabase.js"></script>
   <script src="config.js?v=15"></script>
   <script src="stats.js?v=31"></script>
-  <script src="app.js?v=32"></script>
+  <script src="app.js?v=33"></script>
   <script>
     // Enregistrement du service worker (PWA hors-ligne)
     if ('serviceWorker' in navigator) {

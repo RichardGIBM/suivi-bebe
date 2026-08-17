@@ -2328,6 +2328,37 @@ function openSheet(html) { sheetBody.innerHTML = html; backdrop.hidden = false; 
 function closeSheet() { backdrop.hidden = true; sheetBody.innerHTML = ''; }
 backdrop.addEventListener('click', e => { if (e.target === backdrop) closeSheet(); });
 
+/* ---------- Suppression : toujours confirmée ----------
+   Un tap malheureux a déjà coûté un souvenir : la suppression est un soft-delete
+   qui se propage aux deux téléphones, et rien dans l'app ne réaffiche un
+   tombstone — donc côté utilisateur, c'est irréversible.
+   POINT DE PASSAGE UNIQUE : c'est le seul endroit d'app.js qui appelle
+   Store.remove (une garde de test le vérifie), donc aucun bouton ne peut
+   supprimer sans passer par cette question.
+   Le texte est injecté en textContent (jamais en HTML) : un souvenir peut
+   contenir n'importe quel caractère. */
+function askDelete(id, o = {}) {
+  const bd = document.getElementById('confirmBackdrop');
+  const sub = document.getElementById('confirmSub');
+  document.getElementById('confirmIcon').textContent = o.icon || '🗑️';
+  document.getElementById('confirmTitle').textContent = o.title || 'Supprimer ?';
+  sub.textContent = o.sub || ''; sub.hidden = !o.sub;
+  const yes = document.getElementById('confirmYes'), no = document.getElementById('confirmNo');
+  yes.textContent = o.ok || 'Supprimer';
+  no.textContent = o.no || 'Annuler';
+  const onKey = e => { if (e.key === 'Escape') fermer(); };
+  const fermer = () => { bd.hidden = true; document.removeEventListener('keydown', onKey); };
+  document.addEventListener('keydown', onKey);
+  no.onclick = fermer;
+  bd.onclick = e => { if (e.target === bd) fermer(); };   // tap à côté = on ne supprime pas
+  yes.onclick = () => {
+    fermer();
+    Store.remove(id);
+    closeSheet(); toast(o.done || 'Supprimé'); vibrate(); renderCurrent();
+  };
+  bd.hidden = false;
+}
+
 function save(action, data, ts) {
   Store.add(action.id, data, ts);
   closeSheet(); toast(`${action.emoji} ${action.name} enregistré`); vibrate(); renderCurrent();
@@ -2472,7 +2503,9 @@ function openActionSheet(action, ev) {
   // Focus auto du nom uniquement en création (l'édition ne doit pas ouvrir le clavier d'emblée)
   if (!isEdit && action.id === 'medicament') { const i = sheetBody.querySelector('#medName'); if (i) setTimeout(() => i.focus(), 50); }
   if (isEdit) {
-    document.getElementById('del').onclick = () => { Store.remove(ev.id); closeSheet(); toast('Supprimé'); renderCurrent(); };
+    // Titre sans genre (« ce/cette ») : le nom de l'action est mis en sous-titre,
+    // avec l'heure et le détail — de quoi reconnaître la ligne qu'on efface.
+    document.getElementById('del').onclick = () => askDelete(ev.id, { icon: action.emoji, title: 'Supprimer cet événement ?', sub: [action.name, hhmm(ev.ts), describe(ev)].filter(Boolean).join(' · ') });
     document.getElementById('save').onclick = () => {
       Store.update(ev.id, { ts: getTime().toISOString(), data: getData() });
       closeSheet(); toast('Modifié'); vibrate(); renderCurrent();
@@ -2522,7 +2555,9 @@ function sheetSleepEnd(sleep) {
     </div>`);
   const preview = document.getElementById('durPreview');
   const getTime = wireTimeField(sheetBody, now, (d) => { preview.textContent = fmtDuration(durMin(sleep.ts, d)); });
-  document.getElementById('del').onclick = () => { Store.remove(sleep.id); closeSheet(); toast('Dodo annulé'); renderCurrent(); };
+  // Dodo en cours : « Annuler » aurait deux sens ici (annuler le dodo / annuler la
+  // question) → « Effacer » vs « Continuer », aucune ambiguïté sur les deux boutons.
+  document.getElementById('del').onclick = () => askDelete(sleep.id, { icon: '😴', title: 'Effacer ce dodo en cours ?', sub: `Commencé à ${hhmm(sleep.ts)}`, ok: 'Effacer', no: 'Continuer', done: 'Dodo annulé' });
   document.getElementById('save').onclick = () => {
     Store.patchData(sleep.id, { end: getTime().toISOString() });
     closeSheet(); toast('😴 Dodo enregistré'); vibrate(); renderCurrent();
@@ -2552,7 +2587,7 @@ function sheetSleepEditDone(ev) {
   const recompute = () => { preview.textContent = fmtDuration(durMin(getStart(), getEnd())); };
   const getStart = wireTimeField(document.getElementById('startField'), ev.ts, recompute);
   const getEnd = wireTimeField(document.getElementById('endField'), ev.data.end, recompute);
-  document.getElementById('del').onclick = () => { Store.remove(ev.id); closeSheet(); toast('Supprimé'); renderCurrent(); };
+  document.getElementById('del').onclick = () => askDelete(ev.id, { icon: '😴', title: 'Supprimer ce dodo ?', sub: `${hhmm(ev.ts)} → ${hhmm(ev.data.end)} · ${fmtDuration(durMin(ev.ts, ev.data.end))}` });
   document.getElementById('save').onclick = () => {
     Store.update(ev.id, { ts: getStart().toISOString() });
     Store.patchData(ev.id, { end: getEnd().toISOString() });
@@ -2578,10 +2613,13 @@ function openLearnedSheet(ev) {
       <button class="btn btn-danger" id="del">Supprimer</button>
       <button class="btn btn-primary" id="save">Enregistrer</button>
     </div>`);
-  document.getElementById('del').onclick = () => { Store.remove(ev.id); closeSheet(); toast('Supprimé'); renderCurrent(); };
+  // Un souvenir ne se rattrape pas : on cite son texte dans la question.
+  const effacer = () => askDelete(ev.id, { icon: '✨', title: 'Supprimer ce souvenir ?', sub: `« ${ev.data.text} »`, done: 'Souvenir supprimé' });
+  document.getElementById('del').onclick = effacer;
   document.getElementById('save').onclick = () => {
     const t = document.getElementById('learnedEdit').value.trim();
-    if (!t) { Store.remove(ev.id); } else { Store.patchData(ev.id, { text: t }); }
+    if (!t) { effacer(); return; }   // champ vidé = suppression → même confirmation
+    Store.patchData(ev.id, { text: t });
     closeSheet(); toast('Modifié'); renderCurrent();
   };
 }

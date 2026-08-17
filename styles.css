@@ -414,6 +414,42 @@ body :is(input, textarea) { -webkit-user-select: text; user-select: text; }
 .btn-ghost { background: transparent; color: var(--text-soft); }
 .btn-danger { background: #f4d3d3; color: #c0392b; }
 
+/* ---------- Confirmation de suppression ----------
+   Boîte CENTRÉE (et non un second bottom sheet) : elle se superpose à la feuille
+   d'édition restée ouverte derrière, donc « Annuler » revient exactement où on
+   en était. z-index 70 = au-dessus de la feuille (50) et du popover (60), mais
+   sous le toast (100) et l'écran de verrouillage (200). */
+.confirm-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(40, 28, 22, 0.4);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  z-index: 70;
+  animation: fade 0.15s ease;
+}
+.confirm-backdrop[hidden] { display: none; }
+.confirm {
+  background: var(--bg);
+  width: 100%;
+  max-width: 330px;
+  border-radius: 22px;
+  padding: 22px 20px 20px;
+  box-shadow: var(--shadow);
+  text-align: center;
+  animation: popin 0.16s cubic-bezier(0.2, 0.8, 0.2, 1);
+  max-height: 80vh;
+  overflow-y: auto;
+}
+.confirm-icon { font-size: 30px; line-height: 1; }
+.confirm-title { font-size: 18px; font-weight: 700; margin: 10px 0 5px; }
+/* `anywhere` : un souvenir « appris » peut être un long texte d'un seul tenant. */
+.confirm-sub { font-size: 14px; color: var(--text-soft); line-height: 1.35; overflow-wrap: anywhere; }
+.confirm-sub[hidden] { display: none; }
+.confirm .sheet-actions { margin-top: 20px; }
+
 /* ---------- Champs texte ---------- */
 .text-field {
   width: 100%;
@@ -515,6 +551,7 @@ body :is(input, textarea) { -webkit-user-select: text; user-select: text; }
 
 @keyframes fade { from { opacity: 0; } to { opacity: 1; } }
 @keyframes slideup { from { transform: translateY(100%); } to { transform: translateY(0); } }
+@keyframes popin { from { transform: scale(0.94); opacity: 0; } to { transform: scale(1); opacity: 1; } }
 
 /* ---------- Pastille de synchro (Phase 3) : petit point discret, centré tout en bas ---------- */
 .sync-pill {

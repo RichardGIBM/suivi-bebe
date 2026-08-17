@@ -224,6 +224,14 @@ Voir §7.
   + boutons **−/+ 5 min**, borné à la journée.
 - **Sommeil** : flux dédié début/fin. `activeSleep()` = un `sommeil` sans `end`
   démarré il y a **< 16 h** (`SLEEP_MAX_MS`) — évite qu'un dodo oublié gonfle sans fin.
+- **Confirmation de suppression** (`askDelete(id, {icon, title, sub, ok, no, done})`) :
+  **seul endroit d'app.js qui appelle `Store.remove`** — une garde de test le vérifie,
+  donc aucun bouton ne peut supprimer sans poser la question. Boîte centrée
+  (`#confirmBackdrop`, z-index 70) **au-dessus** de la feuille d'édition restée
+  ouverte : « Annuler » ne fait rien perdre de la saisie. Le sous-titre rappelle
+  l'événement visé (heure + détail, ou le texte du souvenir) et est injecté en
+  `textContent`. La suppression est un soft-delete propagé aux deux téléphones et
+  rien ne réaffiche un tombstone : côté utilisateur, c'est définitif.
 - **Toast**, **vibration** (`navigator.vibrate`), **échappement HTML** (`escapeHtml`).
 - **Pull-to-refresh** maison (`wirePullToRefresh`) : seuil 70 px, désactivé si un
   sheet/verrou est ouvert.
