@@ -829,6 +829,8 @@ body :is(input, textarea) { -webkit-user-select: text; user-select: text; }
   cursor: pointer;
 }
 .eb-btn:active { background: var(--surface-2); }
+.eb-btns + .eb-btns { margin-top: 8px; }        /* 2e rangée : bouton pleine largeur */
+.eb-note { font-size: 11.5px; color: var(--text-soft); margin-top: 8px; line-height: 1.45; }
 
 /* ============================================================
    Onglet PRÉDICTION (mode laboratoire)

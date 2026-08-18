@@ -1374,6 +1374,12 @@ function renderStats() {
         <button class="eb-btn" id="expEvents">CSV événements</button>
         <button class="eb-btn" id="expDaily">CSV /jour</button>
       </div>
+      <div class="eb-btns">
+        <button class="eb-btn" id="expBS">🔬 JSON Baby Scientist</button>
+      </div>
+      <div class="eb-note">Même journal que « JSON brut », plus la couverture des données
+        (à partir de quand chaque domaine est fiable) : de quoi analyser dehors sans
+        prendre une absence de saisie pour un zéro.</div>
     </div>`;
 
   host.innerHTML = `
@@ -1391,6 +1397,7 @@ function renderStats() {
   const j = host.querySelector('#expJson'); if (j) j.onclick = exportJSON;
   const ce = host.querySelector('#expEvents'); if (ce) ce.onclick = exportEventsCSV;
   const cd = host.querySelector('#expDaily'); if (cd) cd.onclick = exportDailyCSV;
+  const bs = host.querySelector('#expBS'); if (bs) bs.onclick = exportBabyScientistJSON;
 }
 
 /* ============================================================
@@ -2246,13 +2253,17 @@ function csvRows(rows) { return rows.map(r => r.map(csvCell).join(',')).join('\r
 function localYMD(d) { const x = new Date(d); return `${x.getFullYear()}-${String(x.getMonth() + 1).padStart(2, '0')}-${String(x.getDate()).padStart(2, '0')}`; }
 function localHM(d) { return new Date(d).toTimeString().slice(0, 5); }
 
-function exportJSON() {
-  const events = Store.all(); // non supprimés, triés par date
-  const payload = {
+/* Enveloppe du journal brut — profil historique, schema_version 1.
+   Partagée telle quelle par les deux exports JSON : les événements et leurs id
+   sont donc IDENTIQUES d'un profil à l'autre (une seule lecture de Store.all()).
+   `tz_offset_min` ne vaut QUE pour l'instant de l'export : ne pas l'appliquer à
+   tout l'historique (changements d'heure) — c'est `timezone` qui fait foi. */
+function buildRawExportPayload(events, now) {
+  return {
     meta: {
-      exported_at: new Date().toISOString(),
+      exported_at: now.toISOString(),
       timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
-      tz_offset_min: -new Date().getTimezoneOffset(),
+      tz_offset_min: -now.getTimezoneOffset(),
       app_version: APP_VERSION,
       schema_version: 1,
       includes_deleted: false,
@@ -2260,8 +2271,29 @@ function exportJSON() {
     },
     events,
   };
+}
+function exportJSON() {
+  const events = Store.all(); // non supprimés, triés par date
+  const payload = buildRawExportPayload(events, new Date());
   downloadText(`suivi-bebe-${stamp()}.json`, JSON.stringify(payload, null, 2), 'application/json');
   toast('📄 Export JSON');
+}
+/* Profil « Baby Scientist » (SPECS-baby-scientist-export.md) : le MÊME journal,
+   plus une extension racine qui porte le contexte d'analyse (couverture, âge,
+   registres). Un lecteur du profil historique qui ignore les clés inconnues sait
+   toujours lire `meta` et `events`. Rien ne part sur le réseau : le fichier est
+   fabriqué dans le navigateur, comme les autres exports. */
+function exportBabyScientistJSON() {
+  const now = new Date();
+  const events = Store.all();
+  const payload = buildRawExportPayload(events, now);
+  payload.meta.export_profile = 'baby-scientist';
+  payload.meta.event_order = 'desc';   // informatif : un lecteur doit trier explicitement
+  payload.baby_scientist = Stats.babyScientistExtension(events, {
+    now, birth: BIRTH, domainStart: DATA_START, firstCompleteDay: FIRST_COMPLETE_DAY,
+  });
+  downloadText(`baby-scientist-${stamp()}.json`, JSON.stringify(payload, null, 2), 'application/json');
+  toast('🔬 Export Baby Scientist');
 }
 function exportEventsCSV() {
   const tz = -new Date().getTimezoneOffset();

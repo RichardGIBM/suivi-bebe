@@ -1715,6 +1715,108 @@ const Stats = {
       ],
     };
   },
+
+  /* =========================================================
+     Export « Baby Scientist » — SPECS-baby-scientist-export.md 1.0.0
+     ---------------------------------------------------------
+     Extension analytique du journal brut, pour une analyse MANUELLE hors de
+     l'app (ChatGPT, Claude). Aucun calcul, aucun modèle, aucune agrégation :
+     seulement le CONTEXTE que le journal ne porte pas de lui-même.
+
+     Ce qu'elle ajoute, et pourquoi :
+     - la COUVERTURE — à partir de quand chaque domaine est fiable, quel jour est
+       le 1er complet. Sans elle, un analyste lit « 0 couche le 8 août » alors que
+       la donnée n'existait pas encore : absence de saisie ≠ zéro.
+     - l'ÂGE en jours décimaux, pour raisonner sans date de naissance.
+     - quatre registres (annotations, périodes de contexte, hypothèses, exécutions
+       passées) volontairement VIDES tant qu'aucun import de résultats n'existe :
+       on n'invente rien (spec §7.6).
+
+     Les événements ne sont NI copiés NI transformés ici : ils voyagent tels quels
+     dans `events`, et ne servent à cette fonction qu'à borner la couverture.
+     Deux versions séparées : `meta.schema_version` = contrat du journal (1),
+     `baby_scientist.schema_version` = contrat de l'extension (1.0.0).
+     ========================================================= */
+  BS_SCHEMA_VERSION: '1.0.0',
+  BS_SUBJECT_ID: 'baby-1',
+  BS_PREVIOUS_RUNS_MAX: 10,         // index de traçabilité borné (spec §4.4)
+  /* Domaines déclarés. `start` = clé de DATA_START quand une date de fiabilité
+     existe ; sans elle, aucune n'est inventée (`reliable_from: null` + mode
+     `unknown` : on ne prétend rien sur l'exhaustivité).
+     `cordon` est un ancien type, retiré des tuiles mais conservé dans l'historique. */
+  BS_DOMAINS: [
+    { key: 'feeding',   start: 'repas',   actions: ['tetee', 'biberon'] },
+    { key: 'diaper',    start: 'couche',  actions: ['couche'] },
+    { key: 'sleep',     start: 'sommeil', actions: ['sommeil'] },
+    { key: 'health',    start: null,      actions: ['temperature', 'medicament'] },
+    { key: 'routine',   start: null,      actions: ['bain', 'vitamined', 'ventre', 'yeux', 'nez', 'cordon'] },
+    { key: 'milestone', start: null,      actions: ['appris'] },
+  ],
+
+  /* events : le tableau EXACT qui part dans le fichier (déjà sans tombstones).
+     opts : { now, birth, domainStart, firstCompleteDay, subjectId, includeBirth,
+              eventAnnotations, contextPeriods, hypotheses, previousRuns } */
+  babyScientistExtension(events, opts = {}) {
+    const nowMs = (opts.now ? new Date(opts.now) : new Date()).getTime();
+    const birthMs = opts.birth != null ? new Date(opts.birth).getTime() : null;
+    const ds = opts.domainStart || {};
+    const list = (events || []).filter(e => e && !e.deleted);
+
+    // Bornes réelles du journal : min/max des `ts` LISIBLES. Un ts illisible est
+    // ignoré, jamais remplacé par une date de repli.
+    let minMs = null, maxMs = null;
+    const present = new Set();
+    for (const e of list) {
+      if (e.action) present.add(e.action);
+      const t = new Date(e.ts).getTime();
+      if (!isFinite(t)) continue;
+      if (minMs == null || t < minMs) minMs = t;
+      if (maxMs == null || t > maxMs) maxMs = t;
+    }
+
+    // Un domaine n'est déclaré que s'il a une date de fiabilité OU au moins un
+    // événement dans le fichier : pas de domaine fantôme, pas de zéro implicite.
+    const domains = {};
+    for (const d of this.BS_DOMAINS) {
+      const start = d.start && ds[d.start] != null ? new Date(ds[d.start]).getTime() : null;
+      const vu = d.actions.some(a => present.has(a));
+      if ((start == null || !isFinite(start)) && !vu) continue;
+      domains[d.key] = {
+        actions: d.actions.slice(),
+        reliable_from: start == null || !isFinite(start) ? null : this._isoLocal(start),
+        recording_mode: start == null || !isFinite(start) ? 'unknown' : 'best_effort',
+        known_gaps: [],
+      };
+    }
+
+    const subject = {
+      id: opts.subjectId || this.BS_SUBJECT_ID,
+      age_reference_at: new Date(nowMs).toISOString(),
+      // Âge DÉCIMAL : (référence − naissance) / 1 jour, arrondi à 3 décimales.
+      age_at_reference_days: birthMs == null || !isFinite(birthMs) ? null : Math.round((nowMs - birthMs) / 86400000 * 1000) / 1000,
+    };
+    // Date de naissance omise par défaut (donnée identifiante) : sur demande explicite seulement.
+    if (opts.includeBirth && birthMs != null && isFinite(birthMs)) subject.birth_at = new Date(birthMs).toISOString();
+
+    const arr = v => (Array.isArray(v) ? v : []);
+    const fcd = opts.firstCompleteDay != null ? new Date(opts.firstCompleteDay).getTime() : null;
+    return {
+      schema_version: this.BS_SCHEMA_VERSION,
+      subject,
+      coverage: {
+        event_start_at: minMs == null ? null : new Date(minMs).toISOString(),
+        event_end_at: maxMs == null ? null : new Date(maxMs).toISOString(),
+        // Vient de FIRST_COMPLETE_DAY, jamais du 1er événement observé.
+        first_complete_local_date: fcd == null || !isFinite(fcd) ? null : this._isoLocal(fcd).slice(0, 10),
+        domains,
+      },
+      // Registres : remplis uniquement par un import explicite de résultats.
+      event_annotations: arr(opts.eventAnnotations),
+      context_periods: arr(opts.contextPeriods),
+      hypotheses: arr(opts.hypotheses),
+      previous_runs: arr(opts.previousRuns).slice(0, this.BS_PREVIOUS_RUNS_MAX),
+    };
+  },
 };
 
 if (typeof window !== 'undefined') window.Stats = Stats;

@@ -58,18 +58,20 @@ Suivi bébé/
 │   ├── stats.test.js     #   règles de calcul (§7)
 │   ├── prediction.test.js#   prédictif : échantillons, backtests, états (§8)
 │   ├── lab.test.js       #   laboratoire Champion/Challengers (§8)
+│   ├── export.test.js    #   export Baby Scientist : couverture des données (§9)
 │   └── guards.test.js    #   gardes au niveau des sources
 ├── DOC.md                # Ce document (rétro-doc)
 ├── SPECS-stats.md        # Spécification détaillée du reporting / KPI (fait foi pour §7)
 ├── SPECS-timeline.md     # Spécification de la vue Frise du journal
+├── SPECS-baby-scientist-export.md  # Contrat de l'export d'analyse externe (fait foi pour §9.5)
 ├── RECOS-prediction-sommeil-v5.md  # Spécification du prédictif + du laboratoire (fait foi pour §8)
 ├── mockup-prediction.html          # Maquette de référence de l'onglet Prédiction
 └── README.md             # Notes de lancement
 ```
 
-**Versionnage des assets** : les URL portent `?v=N` (aujourd'hui `styles.css?v=33`,
-`app.js?v=33`, `stats.js?v=31`, `config.js?v=15`) et le cache du service worker
-(`CACHE = 'suivi-bebe-v33'`) est aligné sur le **plus grand** de ces numéros.
+**Versionnage des assets** : les URL portent `?v=N` (aujourd'hui `styles.css?v=34`,
+`app.js?v=34`, `stats.js?v=32`, `config.js?v=15`) et le cache du service worker
+(`CACHE = 'suivi-bebe-v34'`) est aligné sur le **plus grand** de ces numéros.
 Toute mise à jour d'asset doit **incrémenter `N` dans `index.html` et reporter la même
 URL dans `ASSETS` de `sw.js`**, sinon les clients installés gardent l'ancienne version.
 Les trois invariants (`CACHE` = max des `?v=N`, `ASSETS` ⊇ URLs d'`index.html`, et
@@ -397,7 +399,8 @@ consomment les mêmes, pour qu'une règle n'existe jamais en deux exemplaires :
 - Sélecteur de période **7 / 14 / 30 j** (défaut 7).
 - Bandeau « Aujourd'hui · à cette heure » (chiffres bruts, sans comparaison trompeuse).
 - 7 cartes avec grand chiffre + sparkline.
-- Section « Détails » repliée, encart « Qualité des données », bloc **Export**.
+- Section « Détails » repliée, encart « Qualité des données », bloc **Export** (3 boutons
+  sur une rangée + « JSON Baby Scientist » sur la sienne, avec une note d'usage — §9).
 
 ### Graphes SVG (charte dataviz)
 
@@ -584,8 +587,10 @@ de test l'interdit** (§12).
 
 ## 9. Export (pour analyse / IA)
 
-**4 formats.** Trois depuis la vue Stats (`exportJSON` / `exportEventsCSV` /
-`exportDailyCSV`), un depuis l'onglet Prédiction (`exportLabJSON`) :
+**5 formats.** Quatre depuis la vue Stats (`exportJSON` / `exportEventsCSV` /
+`exportDailyCSV` / `exportBabyScientistJSON`), un depuis l'onglet Prédiction
+(`exportLabJSON`). Tous sont fabriqués **dans le navigateur** : aucun octet ne part
+sur le réseau.
 
 1. **JSON brut** : tous les événements + en-tête méta (`exported_at`, `timezone`,
    `tz_offset_min`, `app_version`, `schema_version`, `includes_deleted`, `count`).
@@ -608,13 +613,44 @@ de test l'interdit** (§12).
    identifiant neutre (`baby-1`), **âge en jours**, aucune date de naissance, aucun nom.
    *(Le périmètre était « sommeil seul » en schéma 1.0 ; l'ajout des repas est ce qui a
    fait passer le schéma en 1.1.)*
+5. **JSON Baby Scientist** (`exportBabyScientistJSON`, extension `1.0.0`, contrat dans
+   `SPECS-baby-scientist-export.md`) : le **même journal que le JSON brut** — même
+   enveloppe `meta`, même tableau `events`, mêmes id, une seule lecture de `Store.all()`
+   — plus une **extension racine `baby_scientist`** qui porte le contexte d'analyse.
+   Destiné à une analyse **manuelle hors de l'app** (ChatGPT, Claude) : l'app ne gagne
+   ni LLM ni moteur statistique.
+
+   Ce que l'extension ajoute, et **pourquoi** :
+
+   | Bloc | Contenu | Ce que ça évite |
+   |---|---|---|
+   | `subject` | `baby-1`, instant de référence, **âge décimal en jours** | lire les dates sans jamais exposer la date de naissance (omise par défaut) |
+   | `coverage` | bornes réelles du journal, `first_complete_local_date`, et par **domaine** (`feeding`, `diaper`, `sleep`, `health`, `routine`, `milestone`) sa `reliable_from` + `recording_mode` + `known_gaps` | qu'un analyste lise « 0 couche le 8 août » alors que la donnée **n'existait pas encore** — absence de saisie ≠ zéro |
+   | `event_annotations` | qualité d'un horodatage (`approximate`, `date_only`…) | corriger un événement source pour signaler une heure approximative |
+   | `context_periods` | facteurs de confusion (voyage, maladie…) | conclure d'une corrélation sans savoir qu'on était en déplacement |
+   | `hypotheses` · `previous_runs` | registre d'hypothèses et index des analyses passées | repartir de zéro à chaque analyse |
+
+   Deux **versions séparées et volontairement distinctes** : `meta.schema_version` (= `1`)
+   est le contrat du journal, `baby_scientist.schema_version` (= `1.0.0`) celui de
+   l'extension. Un lecteur du profil historique qui ignore les clés inconnues sait donc
+   toujours lire `meta` et `events` ; `meta.export_profile = "baby-scientist"` identifie
+   le profil, et le bouton **JSON brut** continue de produire exactement l'ancien fichier
+   (une garde de test l'impose, §12).
+
+   **Rien n'est inventé** : `reliable_from` vient de `DATA_START` et
+   `first_complete_local_date` de `FIRST_COMPLETE_DAY`, jamais d'une inférence sur les
+   données ; un domaine sans date déclarée sort avec `reliable_from: null` et
+   `recording_mode: 'unknown'` plutôt qu'une date plausible ; un domaine sans date **ni**
+   événement n'apparaît pas du tout. Les quatre registres sont **vides en V1** — ils ne
+   se rempliront que par un import explicite de résultats (§7.6 de la spec), le point de
+   branchement étant les options de `Stats.babyScientistExtension`.
 
 ---
 
 ## 10. PWA & hors-ligne (sw.js + manifest)
 
 - **Manifeste** : `standalone`, `portrait`, icônes maskables 192/512, thème blanc.
-- **Service worker** (`sw.js`, cache `suivi-bebe-v33`) :
+- **Service worker** (`sw.js`, cache `suivi-bebe-v34`) :
   - `install` → pré-cache la liste `ASSETS` (app shell + vendor + icônes).
   - `activate` → purge les anciens caches (≠ version courante).
   - `fetch` : **navigations** = réseau d'abord, repli sur `index.html` en cache ;
@@ -671,7 +707,7 @@ node tests/run.js
 ```
 
 Suite **sans aucune dépendance** (pas de `package.json`, pas de build, node seul) :
-**103 cas · ~104 000 assertions**. Un filtre optionnel en argument ne joue que les
+**121 cas · ~104 000 assertions**. Un filtre optionnel en argument ne joue que les
 fichiers correspondants (`node tests/run.js lab`).
 
 Deux détails du harnais évitent des faux verts :
@@ -689,6 +725,7 @@ Deux détails du harnais évitent des faux verts :
 | `stats.test.js` | les règles de §7 : découpe à minuit, heure d'été/hiver (jour de 23 h / 25 h), bornes 16 h, invariant Σ segments = total, dénominateurs des moyennes, les 7 listes de qualité, + des tests de **propriétés** sur scénarios pseudo-aléatoires (PRNG déterministe, jamais `Math.random`) |
 | `prediction.test.js` | échantillons, backtests walk-forward, **absence de fuite du futur**, états AWAKE/ASLEEP/UNKNOWN, bases de plage |
 | `lab.test.js` | cas du laboratoire, comparaison appariée, cycle de vie des statuts, checkpoints, export LLM, **famille MF** (features de repas, §8.6) |
+| `export.test.js` | l'extension d'analyse de §9.5 : versions séparées, âge décimal **sans** date de naissance, `reliable_from` en heure locale (été **et** hiver), domaines sans date déclarée, tombstones exclus, registres bornés, sortie sérialisable et journal d'entrée non muté |
 | `guards.test.js` | gardes au niveau des **sources** (ci-dessous) |
 
 ### Les gardes sur les sources — ce qu'un test unitaire ne peut pas voir
@@ -712,7 +749,14 @@ Ce sont des règles de projet rendues **automatiques**, chacune née d'une vraie
 - `LAB_STATUS` (app.js) ≡ `Stats.LAB_STATUS_ORDER` **dans les deux sens** (sinon un statut
   s'afficherait en brut, ou un statut fantôme traînerait) ;
 - **le laboratoire ne persiste rien**, et **M8 n'a pas de bouton** ;
-- **chaque liste de `quality`** a une entrée dans `qTypes` (pas d'anomalie muette).
+- **chaque liste de `quality`** a une entrée dans `qTypes` (pas d'anomalie muette) ;
+- **le profil Baby Scientist ne fuit pas** dans le JSON brut : `export_profile`,
+  `baby_scientist` et `babyScientistExtension` n'apparaissent **que** dans
+  `exportBabyScientistJSON`, qui ne lit `Store.all()` qu'**une fois** et prend ses dates
+  de fiabilité dans les constantes (jamais en dur) — sinon les deux exports divergeraient ;
+- **chaque type d'action est rattaché à un domaine de couverture** : une tuile ajoutée sans
+  domaine partirait dans `events[]` sans date de fiabilité, et l'analyste ne pourrait plus
+  distinguer « pas encore suivi » de « zéro ».
 
 ### Hors périmètre, assumé
 

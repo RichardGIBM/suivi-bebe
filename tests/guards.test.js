@@ -90,7 +90,7 @@ module.exports = ({ suite, test, eq, deepEq, ok, Stats, ROOT, fs, path }) => {
 
   test('surface publique de stats.js (contrat pour app.js et le prédictif)', () => {
     for (const k of ['compute', 'sleepSegments', 'sleepEpisodes', 'feedTimeline', 'daysWindow', 'startOfDay', 'addDays', 'dayKey', 'isSameDay',
-      'sleepPrediction', 'sleepLab', 'labExport']) {
+      'sleepPrediction', 'sleepLab', 'labExport', 'babyScientistExtension']) {
       eq(typeof Stats[k], 'function', `Stats.${k}`);
     }
     eq(Stats.SLEEP_MAX_MS, 16 * 60 * 60 * 1000, 'SLEEP_MAX_MS');
@@ -155,6 +155,43 @@ module.exports = ({ suite, test, eq, deepEq, ok, Stats, ROOT, fs, path }) => {
     // Au-dessus de la feuille (50) et du popover (60), sous le toast (100).
     const z = +(SRC.styles.match(/\.confirm-backdrop \{[^}]*z-index: (\d+)/) || [])[1];
     ok(z > 60 && z < 100, `z-index de la confirmation entre le popover et le toast (${z})`);
+  });
+
+  test('l’export JSON brut garde son profil historique (§8 de la spec Baby Scientist)', () => {
+    // Deux profils, une seule enveloppe : les événements et leurs id doivent être
+    // IDENTIQUES d'un export à l'autre. D'où une seule lecture de Store.all() par
+    // export, et l'extension confinée à exportBabyScientistJSON — un `baby_scientist`
+    // qui fuirait dans buildRawExportPayload changerait le profil historique.
+    eq((SRC.app.match(/buildRawExportPayload\(/g) || []).length, 3,
+      'buildRawExportPayload : 1 définition + 2 appels (JSON brut et Baby Scientist)');
+
+    const lignes = SRC.app.split('\n');
+    const debut = lignes.findIndex(l => /^function exportBabyScientistJSON\(/.test(l)) + 1;
+    ok(debut > 0, 'app.js : function exportBabyScientistJSON');
+    const fin = lignes.findIndex((l, i) => i > debut - 1 && /^\}/.test(l)) + 1;
+    const dehors = codeLines(SRC.app)
+      .filter(l => /export_profile|baby_scientist|babyScientistExtension/.test(l.txt))
+      .filter(l => l.n < debut || l.n > fin).map(l => l.n);
+    deepEq(dehors, [], 'le profil Baby Scientist ne sort pas de sa fonction');
+
+    const corps = lignes.slice(debut, fin).join('\n');
+    eq((corps.match(/Store\.all\(\)/g) || []).length, 1, 'une seule lecture du journal');
+    for (const c of ['birth: BIRTH', 'domainStart: DATA_START', 'firstCompleteDay: FIRST_COMPLETE_DAY']) {
+      ok(corps.includes(c), `les dates de fiabilité viennent des constantes (${c})`);
+    }
+    ok(/id="expBS"/.test(SRC.app) && /expBS'\)/.test(SRC.app), 'bouton d’export câblé');
+  });
+
+  test('chaque type d’action est rattaché à un domaine de couverture', () => {
+    // Un type ajouté aux tuiles sans domaine partirait dans events[] sans date de
+    // fiabilité : l'analyste ne saurait pas distinguer « pas encore suivi » de zéro.
+    const bloc = (SRC.app.match(/const ACTIONS = \[([\s\S]*?)\n\];/) || [])[1];
+    ok(bloc, 'app.js : bloc const ACTIONS');
+    const ids = [...bloc.matchAll(/\{ id: '([^']+)'/g)].map(m => m[1]);
+    ok(ids.length >= 11, `types déclarés (${ids.length})`);
+    const mappes = new Set(Stats.BS_DOMAINS.flatMap(d => d.actions));
+    // 'appris' n'est pas une tuile (saisie par son propre champ) mais reste un événement.
+    deepEq([...ids, 'appris'].filter(a => !mappes.has(a)), [], 'type d’action sans domaine');
   });
 
   test('les types d’anomalies de stats.js sont tous affichés par app.js', () => {
