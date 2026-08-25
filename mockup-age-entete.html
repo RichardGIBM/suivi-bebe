@@ -1,0 +1,220 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Proposition — âge du bébé dans l'entête</title>
+<style>
+  /* ===== Jetons repris À L'IDENTIQUE de styles.css (aucune invention) ===== */
+  :root{
+    --bg:#ffffff; --surface:#ffffff; --surface-2:#f5f6f8;
+    --text:#33333a; --text-soft:#8a8a93; --line:#e7e8ec;
+    --shadow:0 4px 16px rgba(30,30,45,.10); --radius:20px;
+    --rose:#CF8AB3;               /* --c-tetee : la couleur "repas/vie" de l'app */
+    --rose-ink:#9d4f7b;           /* variante foncée du rose, lisible en 11-12px */
+    --rose-tint:rgba(207,138,179,.14);
+  }
+  *{box-sizing:border-box;-webkit-tap-highlight-color:transparent;}
+  body{
+    margin:0;background:#eef0f3;color:var(--text);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",sans-serif;
+    padding:28px 16px 64px;
+  }
+  .page{max-width:900px;margin:0 auto;}
+  .lead{max-width:640px;margin:0 auto 26px;}
+  .lead h1{font-size:21px;margin:0 0 6px;letter-spacing:-.01em;}
+  .lead p{font-size:13.5px;line-height:1.5;color:#55555e;margin:0;}
+  .lead .tog{display:inline-flex;gap:2px;margin-top:14px;background:var(--surface);border:1px solid var(--line);border-radius:999px;padding:3px;box-shadow:var(--shadow);}
+  .lead .tog button{border:0;background:none;font:inherit;font-size:12.5px;font-weight:600;color:var(--text-soft);padding:6px 14px;border-radius:999px;cursor:pointer;}
+  .lead .tog button.on{background:var(--rose-tint);color:var(--rose-ink);}
+
+  .grid{display:grid;gap:18px;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));align-items:start;}
+
+  .opt{background:var(--surface);border-radius:24px;box-shadow:0 1px 3px rgba(30,30,45,.08);overflow:hidden;border:1px solid #edeef1;}
+  .opt.reco{border:1.5px solid var(--rose);box-shadow:0 8px 26px rgba(207,138,179,.22);}
+  .opt-hd{padding:16px 18px 4px;}
+  .opt-hd .kick{display:flex;align-items:center;gap:8px;font-size:11px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--text-soft);}
+  .opt.reco .opt-hd .kick{color:var(--rose-ink);}
+  .badge{background:var(--rose);color:#fff;font-size:9.5px;font-weight:700;letter-spacing:.06em;padding:3px 8px;border-radius:999px;}
+  .opt-hd h2{font-size:16px;margin:7px 0 2px;letter-spacing:-.01em;}
+  .opt-hd p{font-size:12px;line-height:1.45;color:#6b6b73;margin:0 0 4px;}
+
+  /* Chaque swatch = l'entête réel de l'app, sur fond blanc comme dans l'app */
+  .swatches{padding:6px 14px 16px;}
+  .state{font-size:10px;font-weight:600;letter-spacing:.05em;text-transform:uppercase;color:#b3b3ba;margin:14px 4px 6px;}
+
+  /* ---- copie fidèle de .topbar / .nav-btn / .date-wrap ---- */
+  .topbar{display:flex;align-items:center;justify-content:space-between;gap:12px;background:var(--bg);border-radius:16px;padding:8px 10px;}
+  .nav-btn{width:40px;height:40px;flex:0 0 40px;border:none;border-radius:50%;background:var(--surface);color:var(--text-soft);font-size:26px;line-height:1;box-shadow:var(--shadow);}
+  .nav-btn:disabled{opacity:.35;}
+  .date-wrap{text-align:center;flex:1;}
+  .date-label{font-size:18px;font-weight:700;}
+  .date-sub{font-size:12px;color:var(--text-soft);margin-top:1px;text-transform:capitalize;}
+
+  /* ---- l'élément ajouté : la puce d'âge (candidate signature) ---- */
+  .age-chip{
+    display:inline-flex;align-items:center;gap:5px;
+    background:var(--rose-tint);color:var(--rose-ink);
+    font-size:12px;font-weight:700;line-height:1;
+    padding:5px 10px;border-radius:999px;
+    font-variant-numeric:tabular-nums;white-space:nowrap;
+  }
+  .age-chip svg{width:12px;height:12px;display:block;}
+  .age-chip.birth{background:var(--surface-2);color:var(--text-soft);}
+
+  /* Option 1 : puce en éveil (au-dessus du libellé) */
+  .o1 .date-wrap{display:flex;flex-direction:column;align-items:center;gap:4px;}
+
+  /* Option 2 : puce en ligne, à droite du bloc date (centrée verticalement) */
+  .o2 .date-wrap{display:flex;align-items:center;justify-content:center;gap:10px;flex:1;}
+  .o2 .date-txt{display:flex;flex-direction:column;text-align:right;}
+  .o2 .date-txt .date-sub{text-align:right;}
+
+  /* Option 3 : âge en héros, le jour passe en éveil */
+  .o3 .kicker{font-size:10px;font-weight:700;letter-spacing:.07em;text-transform:uppercase;color:var(--text-soft);}
+  .o3 .age-hero{font-size:20px;font-weight:800;color:var(--rose-ink);letter-spacing:-.01em;margin-top:1px;font-variant-numeric:tabular-nums;}
+  .o3 .age-hero.birth{color:var(--text);}
+
+  .note{max-width:640px;margin:30px auto 0;background:var(--surface);border:1px solid var(--line);border-radius:16px;padding:16px 18px;font-size:12.5px;line-height:1.55;color:#55555e;}
+  .note b{color:var(--text);}
+  .note code{background:var(--surface-2);border-radius:6px;padding:1px 5px;font-size:11.5px;}
+  .note ul{margin:8px 0 0;padding-left:18px;}
+  .note li{margin:3px 0;}
+</style>
+</head>
+<body>
+<div class="page">
+
+  <div class="lead">
+    <h1>L'âge de bébé dans l'entête</h1>
+    <p>Trois placements possibles, tous natifs (mêmes couleurs, même rayon, même ombre que l'app).
+       L'âge affiché est celui du <b>jour sélectionné</b> — chaque swatch le montre à trois moments :
+       aujourd'hui, un jour passé, et le jour de la naissance.</p>
+    <div class="tog" id="tog">
+      <button class="on" data-mode="jours">14 jours</button>
+      <button data-mode="semaines">2 semaines</button>
+    </div>
+  </div>
+
+  <div class="grid" id="grid"></div>
+
+  <div class="note">
+    <b>Comportement &amp; formulation (le même pour les trois options).</b>
+    <ul>
+      <li>Âge = jours civils entre la naissance (6 août 2026) et le jour affiché, calculés avec
+          <code>Math.round</code> — la règle anti-décalage horaire de l'app.</li>
+      <li><code>0 j → « Naissance »</code> (puce grise, pas de « 0 jour »), <code>1 j → « 1 jour »</code>,
+          puis <code>« N jours »</code>. En mode semaines : <code>« 2 sem »</code> / <code>« 2 sem 3 j »</code> dès 7 jours.</li>
+      <li>Avant la naissance (navigation loin en arrière) : la puce <b>disparaît</b>, on n'invente pas d'âge négatif.</li>
+      <li>Une ligne dans <code>renderHeader()</code> et une règle CSS <code>.age-chip</code> — pas de nouvel événement, pas de donnée en plus.</li>
+    </ul>
+  </div>
+
+</div>
+
+<script>
+  const BIRTH = new Date(2026,7,6,5,25);
+  const startOfDay = d => { const x=new Date(d); x.setHours(0,0,0,0); return x; };
+  let MODE = 'jours';
+
+  function ageLabel(sel){
+    const days = Math.round((startOfDay(sel) - startOfDay(BIRTH)) / 86400000);
+    if (days < 0) return null;
+    if (days === 0) return {txt:'Naissance', birth:true};
+    if (MODE === 'jours' || days < 7) return {txt: days===1 ? '1 jour' : days+' jours'};
+    const w = Math.floor(days/7), r = days%7;
+    return {txt: r===0 ? `${w} sem` : `${w} sem ${r} j`};
+  }
+  // libellé "Aujourd'hui / Hier / date" comme renderHeader()
+  const REF = new Date(2026,7,20,21,0); // "aujourd'hui" de la maquette : bébé a 14 j
+  function dayLabel(sel){
+    const t=startOfDay(REF), y=new Date(t); y.setDate(t.getDate()-1);
+    if (+startOfDay(sel)===+t) return "Aujourd'hui";
+    if (+startOfDay(sel)===+y) return "Hier";
+    return sel.toLocaleDateString('fr-FR',{weekday:'long',day:'numeric',month:'long'});
+  }
+  const dateSub = sel => sel.toLocaleDateString('fr-FR',{day:'numeric',month:'long',year:'numeric'});
+
+  const SPROUT = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20v-8"/><path d="M12 12c0-3 2.4-5 5-5 0 3-2.4 5-5 5Z"/><path d="M12 13c0-2.4-1.9-4-4-4 0 2.4 1.9 4 4 4Z"/></svg>';
+
+  function chip(sel, extraClass=''){
+    const a = ageLabel(sel);
+    if (!a) return '';
+    const cls = 'age-chip'+(a.birth?' birth':'')+(extraClass?' '+extraClass:'');
+    const glyph = a.birth ? '' : SPROUT;
+    return `<span class="${cls}">${glyph}${a.txt}</span>`;
+  }
+
+  const STATES = [
+    {name:'Aujourd’hui', d:new Date(2026,7,20,21,0), next:true},
+    {name:'Un jour passé', d:new Date(2026,7,9,10,0), next:false},
+    {name:'Jour de la naissance', d:new Date(2026,7,6,10,0), next:false},
+  ];
+
+  function bar(opt, sel){
+    const dis = ' disabled';
+    if (opt==='o1'){
+      return `<div class="topbar o1">
+        <button class="nav-btn">‹</button>
+        <div class="date-wrap">
+          ${chip(sel)}
+          <div><div class="date-label">${dayLabel(sel)}</div>
+          <div class="date-sub">${dateSub(sel)}</div></div>
+        </div>
+        <button class="nav-btn"${dis}>›</button></div>`;
+    }
+    if (opt==='o2'){
+      return `<div class="topbar o2">
+        <button class="nav-btn">‹</button>
+        <div class="date-wrap">
+          <div class="date-txt"><div class="date-label">${dayLabel(sel)}</div>
+          <div class="date-sub">${dateSub(sel)}</div></div>
+          ${chip(sel)}
+        </div>
+        <button class="nav-btn"${dis}>›</button></div>`;
+    }
+    // o3 : héros
+    const a = ageLabel(sel);
+    const hero = a ? `<div class="age-hero${a.birth?' birth':''}">${a.txt}</div>`
+                   : `<div class="date-label">${dayLabel(sel)}</div>`;
+    const kick = a ? `<div class="kicker">${dayLabel(sel)}</div>` : '';
+    return `<div class="topbar o3">
+      <button class="nav-btn">‹</button>
+      <div class="date-wrap">${kick}${hero}
+        <div class="date-sub">${dateSub(sel)}</div></div>
+      <button class="nav-btn"${dis}>›</button></div>`;
+  }
+
+  const OPTS = [
+    {id:'o1', reco:true,  kick:'Placement A', badge:'Recommandé', title:'Puce en éveil',
+     desc:'L’âge coiffe le libellé du jour. Il passe en premier à la lecture, « Aujourd’hui » reste gras pour la navigation.'},
+    {id:'o2', reco:false, kick:'Placement B', badge:'', title:'Puce en ligne',
+     desc:'L’âge se pose à droite de la date. Entête sur deux lignes, hauteur inchangée — le plus discret.'},
+    {id:'o3', reco:false, kick:'Placement C', badge:'', title:'Âge en héros',
+     desc:'On inverse la hiérarchie : l’âge devient le grand chiffre, le jour se fait éveil. Le plus émotionnel, mais le jour est moins saillant.'},
+  ];
+
+  function render(){
+    document.getElementById('grid').innerHTML = OPTS.map(o=>`
+      <div class="opt${o.reco?' reco':''}">
+        <div class="opt-hd">
+          <div class="kick">${o.kick}${o.badge?`<span class="badge">${o.badge}</span>`:''}</div>
+          <h2>${o.title}</h2>
+          <p>${o.desc}</p>
+        </div>
+        <div class="swatches">
+          ${STATES.map(s=>`<div class="state">${s.name}</div>${bar(o.id, s.d)}`).join('')}
+        </div>
+      </div>`).join('');
+  }
+  render();
+
+  document.getElementById('tog').addEventListener('click', e=>{
+    const b = e.target.closest('button'); if(!b) return;
+    MODE = b.dataset.mode;
+    [...e.currentTarget.children].forEach(x=>x.classList.toggle('on', x===b));
+    render();
+  });
+</script>
+</body>
+</html>

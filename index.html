@@ -14,7 +14,7 @@
   <meta name="apple-mobile-web-app-status-bar-style" content="default" />
   <meta name="apple-mobile-web-app-title" content="Suivi Bébé" />
 
-  <link rel="stylesheet" href="styles.css?v=34" />
+  <link rel="stylesheet" href="styles.css?v=35" />
 </head>
 <body>
   <!-- Indicateur "tirer pour rafraîchir" -->
@@ -27,6 +27,7 @@
       <header class="topbar">
         <button class="nav-btn" id="prevDay" aria-label="Jour précédent">‹</button>
         <div class="date-wrap">
+          <div class="age-line" id="dateAge" hidden></div>
           <div class="date-label" id="dateLabel">Aujourd'hui</div>
           <div class="date-sub" id="dateSub"></div>
         </div>
@@ -139,7 +140,7 @@
   <script src="vendor/supabase.js"></script>
   <script src="config.js?v=15"></script>
   <script src="stats.js?v=32"></script>
-  <script src="app.js?v=34"></script>
+  <script src="app.js?v=35"></script>
   <script>
     // Enregistrement du service worker (PWA hors-ligne)
     if ('serviceWorker' in navigator) {

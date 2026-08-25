@@ -382,6 +382,17 @@ let journalView = localStorage.getItem('suivi-bebe-journal-view') === 'timeline'
 function startOfDay(d) { const x = new Date(d); x.setHours(0, 0, 0, 0); return x; }
 function ymd(d) { return `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`; }
 function isSameDay(a, b) { return ymd(a) === ymd(b); }
+// Âge de bébé au JOUR affiché (jours civils, Math.round → robuste au changement d'heure).
+// Jours jusqu'à 4 semaines, puis semaines. Avant la naissance → null (on n'invente pas d'âge négatif).
+function babyAge(date) {
+  const days = Math.round((startOfDay(date).getTime() - startOfDay(BIRTH).getTime()) / 86400000);
+  if (days < 0) return null;
+  if (days === 0) return { txt: 'Naissance', birth: true };
+  if (days === 1) return { txt: '1 jour' };
+  if (days < 28) return { txt: `${days} jours` };
+  const w = Math.floor(days / 7), r = days % 7;
+  return { txt: r === 0 ? `${w} semaines` : `${w} sem ${r} j` };
+}
 function hhmm(d) { return new Date(d).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit', hour12: false }); }
 function pad2(n) { return String(n).padStart(2, '0'); }
 function minOf(ts) { const d = new Date(ts); return d.getHours() * 60 + d.getMinutes(); } // minutes depuis minuit
@@ -510,6 +521,12 @@ function renderHeader() {
   else if (isSameDay(selectedDate, yesterday)) label.textContent = "Hier";
   else label.textContent = selectedDate.toLocaleDateString('fr-FR', { weekday: 'long', day: 'numeric', month: 'long' });
   sub.textContent = selectedDate.toLocaleDateString('fr-FR', { day: 'numeric', month: 'long', year: 'numeric' });
+  const ageEl = document.getElementById('dateAge');
+  if (ageEl) {
+    const a = babyAge(selectedDate);
+    ageEl.hidden = !a;
+    ageEl.innerHTML = a ? `<span class="age-chip${a.birth ? ' age-chip-birth' : ''}">${a.txt}</span>` : '';
+  }
   document.getElementById('nextDay').disabled = isSameDay(selectedDate, today);
   document.body.classList.toggle('other-day', !isSameDay(selectedDate, today));
 }
