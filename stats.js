@@ -551,6 +551,60 @@ const Stats = {
     return { startMs, episodes: kept, closed, ongoing: ongoingRaw, gaps, durations, excluded };
   },
 
+  /* ---------- Analyse de sensibilité à la segmentation (writing-block.md) ----------
+     Notion dérivée « bloc de sommeil » (SleepBout) : jamais persistée, jamais
+     utilisée en live, recalculée à chaque appel pour un seuil donné. Fusionne
+     des épisodes CLOS consécutifs quand l'éveil entre eux est court. Ne fusionne
+     jamais l'épisode en cours (pas couvert par la spec, RAW le traite déjà à part). */
+  buildSleepBouts(closedEpisodes, thresholdMin) {
+    const eps = (closedEpisodes || []).slice().sort((a, b) => a.startMs - b.startMs);
+    const out = [];
+    for (const ep of eps) {
+      const last = out[out.length - 1];
+      const gapMs = last ? ep.startMs - last.endMs : null;
+      if (last && gapMs != null && gapMs >= 0 && gapMs <= thresholdMin * 60000) {
+        last.endMs = ep.endMs;
+        last.totalSleepMin += (ep.endMs - ep.startMs) / 60000;
+        last.segmentCount += 1;
+        last.interruptionCount += 1;
+        last.totalInterruptionMin += gapMs / 60000;
+        last.maxInterruptionMin = Math.max(last.maxInterruptionMin, gapMs / 60000);
+        last.segments.push(ep);
+      } else {
+        out.push({
+          startMs: ep.startMs, endMs: ep.endMs,
+          totalSleepMin: (ep.endMs - ep.startMs) / 60000,
+          segmentCount: 1, interruptionCount: 0,
+          totalInterruptionMin: 0, maxInterruptionMin: 0,
+          segments: [ep],
+        });
+      }
+    }
+    out.forEach(b => { b.totalSpanMin = (b.endMs - b.startMs) / 60000; });
+    return out;
+  },
+
+  /* Reconstruit un S { startMs, episodes, closed, ongoing, gaps, durations,
+     excluded } à la granularité des blocs, pour que TOUT le pipeline existant
+     (_labIndex, _labFeatMap, _labCases, _sleepLabFromSamples...) le consomme
+     sans le savoir. thresholdMin == null ⇒ renvoie Sraw inchangé (RAW = zéro
+     calcul supplémentaire, non-régression garantie par construction). */
+  _predSamplesVariant(Sraw, thresholdMin) {
+    if (thresholdMin == null) return Sraw;
+    const bouts = this.buildSleepBouts(Sraw.closed, thresholdMin);
+    const durations = bouts.map(b => ({ atMs: b.endMs, min: b.totalSleepMin, ep: b }));
+    const units = Sraw.ongoing ? [...bouts, Sraw.ongoing] : bouts.slice();
+    const gaps = [];
+    for (let i = 1; i < units.length; i++) {
+      const prev = units[i - 1], cur = units[i];
+      if (prev.ongoing) continue;
+      const ms = cur.startMs - prev.endMs;
+      if (ms < 0 || ms > this.WAKE_GAP_MAX_MS) continue;
+      gaps.push({ atMs: cur.startMs, min: ms / 60000, fromMs: prev.endMs, ep: cur });
+    }
+    return { startMs: Sraw.startMs, episodes: units, closed: bouts, ongoing: Sraw.ongoing, gaps, durations, excluded: Sraw.excluded };
+  },
+
   /* ---------- Repas : ligne de temps alimentaire ----------
      Primitive pure, au même titre que `sleepEpisodes` : la liste des repas
      triée par instant, pour que le laboratoire (§3.8) puisse TESTER si le
@@ -815,7 +869,7 @@ const Stats = {
      ========================================================= */
 
   // 1.1 : ajout additif des caractéristiques alimentaires et de la famille MF.
-  LAB_SCHEMA_VERSION: 'sleep-prediction-lab/1.1',
+  LAB_SCHEMA_VERSION: 'sleep-prediction-lab/1.2',
   LAB_SUBJECT_ID: 'baby-1',
 
   // §3.10 — constantes PRODUIT (points de départ ajustables), jamais
@@ -1079,7 +1133,10 @@ const Stats = {
     const eps = S.episodes;
     const idx = new Map();
     eps.forEach((ep, i) => idx.set(ep, i));
-    const dur = ep => (ep && !ep.ongoing) ? (ep.endMs - ep.startMs) / 60000 : null;
+    // Un bloc consolidé (§10 writing-block.md) porte .totalSleepMin, qui exclut
+    // le temps d'interruption interne ; un épisode brut ne l'a jamais, donc ce
+    // repli est un no-op pour RAW.
+    const dur = ep => (ep && !ep.ongoing) ? (ep.totalSleepMin != null ? ep.totalSleepMin : (ep.endMs - ep.startMs) / 60000) : null;
     const prevOf = ep => { const i = idx.get(ep); return (i == null || i < 1) ? null : eps[i - 1]; };
     const wakeBefore = ep => {
       const prev = prevOf(ep);
@@ -1120,6 +1177,14 @@ const Stats = {
   _labAgeDays(ms, birthMs) {
     if (birthMs == null) return null;
     return Math.round((this.startOfDay(new Date(ms)).getTime() - birthMs) / 86400000);
+  },
+
+  /* Un bloc consolidé (writing-block.md §11/§12) reste-t-il un état RAW-endormi
+     à l'instant `ms` ? Un épisode brut n'a jamais .segments : toujours vrai,
+     donc la garde qui l'utilise est un no-op pour RAW (Test 6 §25). */
+  _boutRawAsleep(ep, ms) {
+    if (!ep || !ep.segments) return true;
+    return ep.segments.some(seg => ms >= seg.startMs && ms < seg.endMs);
   },
 
   /* ---------- Cas walk-forward ---------- */
@@ -1167,6 +1232,10 @@ const Stats = {
       if (w.length < this.SD_BACKTEST_MIN_TRAIN_SAMPLES) continue;
       const probeMs = d.ep.startMs + this._median(w.map(s => s.min)) * 60000;
       if (probeMs >= d.atMs) continue;              // M0 n'a pas été dépassé : rien à ré-estimer
+      // §11/§12 writing-block.md : la sonde n'est valide que si bébé dormait
+      // RÉELLEMENT (au sens RAW) à cet instant, même si l'instant tombe dans
+      // un bloc fusionné a posteriori — sinon fuite du futur (Test 6 §25).
+      if (!this._boutRawAsleep(d.ep, probeMs)) continue;
       push('remaining', probeMs, probeMs, d.atMs, (d.atMs - probeMs) / 60000, {
         localHour: this._localHour(d.ep.startMs),
         prevSleepMin: ix.dur(ix.prevOf(d.ep)),
@@ -1413,8 +1482,16 @@ const Stats = {
     const birthMs = opts.birth ? this.startOfDay(opts.birth).getTime() : null;
     const S = this._predSamples((allEvents || []).filter(e => e && !e.deleted),
       { nowMs, domainStart: opts.domainStart });
-    const ix = this._labIndex(S);
     const feeds = this.feedTimeline(allEvents, { nowMs, domainStart: opts.domainStart });
+    return this._sleepLabFromSamples(S, feeds, { nowMs, birthMs });
+  },
+
+  /* Corps du laboratoire, paramétré par S (au lieu de le recalculer depuis
+     les événements bruts) : permet de rejouer EXACTEMENT le même pipeline
+     sur une variante de segmentation (blocs de sommeil consolidés) sans
+     dupliquer une ligne de logique — cf. sleepSegmentationSensitivity(). */
+  _sleepLabFromSamples(S, feeds, { nowMs, birthMs }) {
+    const ix = this._labIndex(S);
     const featMap = this._labFeatMap(S, ix, feeds);
 
     const cases = this._labCases(S, ix, birthMs, feeds);
@@ -1510,6 +1587,112 @@ const Stats = {
     };
   },
 
+  /* ---------- Analyse de sensibilité à la segmentation (writing-block.md) ----------
+     Rejoue le MÊME pipeline (mêmes modèles) sur des blocs de sommeil
+     consolidés à seuils croissants, pour lire si la convention RAW (coupe
+     à chaque réveil, même de 2 min) déforme les métriques. RÉTROSPECTIF
+     UNIQUEMENT : aucun impact sur le champion, aucune promotion, rien de
+     persisté (§12/§20/§23). B30 = borne haute de sensibilité, jamais un
+     candidat de production. */
+  SEGMENTATION_VARIANTS: [
+    { id: 'RAW', thresholdMin: null },
+    { id: 'B5', thresholdMin: 5 },
+    { id: 'B10', thresholdMin: 10 },
+    { id: 'B15', thresholdMin: 15 },
+    { id: 'B20', thresholdMin: 20 },
+    { id: 'B30', thresholdMin: 30 },
+  ],
+
+  // §17 : calculé UNE FOIS sur RAW, purement informatif — jamais par variante.
+  _shortSleepDiagnostics(closedEpisodes) {
+    const mins = (closedEpisodes || []).map(ep => (ep.endMs - ep.startMs) / 60000);
+    const under = n => mins.filter(m => m < n).length;
+    return { totalEpisodes: mins.length, under15Min: under(15), under30Min: under(30), under45Min: under(45), under60Min: under(60) };
+  },
+
+  // §16. `mergedEpisodeCount` = nb d'épisodes RAW absorbés dans un bloc plus
+  // grand (= rawEpisodeCount − boutCount par télescopage) ; distinct de
+  // `boutsWithInterruptionCount` = nb de blocs qui SONT une fusion (≥2 segments).
+  _variantDiagnostics(rawClosedCount, bouts) {
+    const merged = bouts.filter(b => b.segmentCount > 1);
+    const interruptions = [];
+    bouts.forEach(b => { for (let i = 1; i < b.segments.length; i++) interruptions.push((b.segments[i].startMs - b.segments[i - 1].endMs) / 60000); });
+    return {
+      rawEpisodeCount: rawClosedCount,
+      boutCount: bouts.length,
+      mergedEpisodeCount: rawClosedCount - bouts.length,
+      interruptionCount: interruptions.length,
+      medianInterruptionMin: this._r1(this._median(interruptions)),
+      p80InterruptionMin: this._r1(this._quantile(interruptions, 0.8)),
+      maxInterruptionMin: interruptions.length ? this._r1(Math.max(...interruptions)) : null,
+      boutsWithInterruptionCount: merged.length,
+      boutsWithInterruptionRate: bouts.length ? this._r1(merged.length / bouts.length * 100) : 0,
+    };
+  },
+
+  /* Stats.sleepSegmentationSensitivity(Store.all(), { domainStart, birth }).
+     Ne remplace ni n'altère sleepLab()/labExport() : fonction additive,
+     jamais appelée par le pipeline live. */
+  sleepSegmentationSensitivity(allEvents, opts = {}) {
+    const now = opts.now ? new Date(opts.now) : new Date();
+    const nowMs = now.getTime();
+    const birthMs = opts.birth ? this.startOfDay(opts.birth).getTime() : null;
+    const events = (allEvents || []).filter(e => e && !e.deleted);
+    const Sraw = this._predSamples(events, { nowMs, domainStart: opts.domainStart });
+    const feeds = this.feedTimeline(allEvents, { nowMs, domainStart: opts.domainStart });
+
+    const byId = {};
+    for (const v of this.SEGMENTATION_VARIANTS) {
+      const S = this._predSamplesVariant(Sraw, v.thresholdMin);
+      byId[v.id] = { S, lab: this._sleepLabFromSamples(S, feeds, { nowMs, birthMs }) };
+    }
+    const raw = byId.RAW;
+    const caseCount = (lab, target) => lab.cases.filter(c => c.target === target).length;
+
+    const variants = this.SEGMENTATION_VARIANTS.map(v => {
+      const r = byId[v.id];
+      const diagnostics = v.thresholdMin == null
+        ? { rawEpisodeCount: Sraw.closed.length, boutCount: Sraw.closed.length, mergedEpisodeCount: 0,
+            interruptionCount: 0, medianInterruptionMin: null, p80InterruptionMin: null, maxInterruptionMin: null,
+            boutsWithInterruptionCount: 0, boutsWithInterruptionRate: 0 }
+        : this._variantDiagnostics(Sraw.closed.length, r.S.closed);
+
+      const performance = {}, pairwiseComparisonsVsChampion = {}, modelDeltasVsRaw = {};
+      for (const m of this.LAB_MODELS) {
+        performance[m.id] = {}; pairwiseComparisonsVsChampion[m.id] = {}; modelDeltasVsRaw[m.id] = {};
+        for (const t of m.targets) {
+          const perf = r.lab.view.perf[m.id][t];
+          performance[m.id][t] = perf;
+          const pair = r.lab.view.paired[m.id][t];
+          if (pair) pairwiseComparisonsVsChampion[m.id][t] = pair;
+          const base = raw.lab.view.perf[m.id][t];
+          modelDeltasVsRaw[m.id][t] = (perf && base && perf.n && base.n)
+            ? { deltaMedianAbsErrorMin: this._r1(perf.medAbsMin - base.medAbsMin), deltaP80AbsErrorMin: this._r1(perf.p80AbsMin - base.p80AbsMin) }
+            : null;
+        }
+      }
+
+      return {
+        variantId: v.id, thresholdMin: v.thresholdMin,
+        diagnostics,
+        onsetCasesRemovedVsRaw: caseCount(raw.lab, 'onset') - caseCount(r.lab, 'onset'),
+        wakeCasesChangedVsRaw: caseCount(raw.lab, 'wake') - caseCount(r.lab, 'wake'),
+        remainingCasesChangedVsRaw: caseCount(raw.lab, 'remaining') - caseCount(r.lab, 'remaining'),
+        performance, pairwiseComparisonsVsChampion, modelDeltasVsRaw,
+        weeklyEvolution: r.lab.weekly,
+      };
+    });
+
+    return {
+      mode: 'retrospective',
+      productionImpact: false,
+      usesFutureResleepToClassifyMicroWake: true,
+      note: "Analyse de sensibilité rétrospective uniquement : aucun seuil n'est sélectionné automatiquement, aucun modèle n'est promu, le champion et le pipeline live restent RAW. Les variantes B5–B30 ne sont PAS des confirmations indépendantes — rien n'est persisté (même pour RAW), donc aucun palier de gel/confirmation n'existe à leur appliquer ; elles sont exploratoires par construction.",
+      variants,
+      shortSleepDiagnostics: this._shortSleepDiagnostics(Sraw.closed),
+    };
+  },
+
   /* ---------- Export LLM-ready (§3.14) ----------
      Snapshot JSON auto-suffisant : les conventions de signe et les
      définitions voyagent DANS le fichier, pour qu'un LLM n'ait besoin
@@ -1524,7 +1707,7 @@ const Stats = {
   },
   _r1(v) { return v == null || !isFinite(v) ? null : Math.round(v * 10) / 10; },
 
-  labExport(lab) {
+  labExport(lab, opts = {}) {
     const r = v => this._r1(v);
     const ch = lab.championId;
     const view = lab.view;
@@ -1713,6 +1896,7 @@ const Stats = {
         'Do not recommend promotion solely from the latest 10 cases.',
         'The more regular the feeding rhythm, the more minutesSinceLastFeed is collinear with the time-since-wake M0 already uses: judge MF models on the cases where the rhythm breaks (feed clusters, unusually long gaps), not on a global average.',
       ],
+      segmentationSensitivity: opts.segmentationSensitivity || null,
     };
   },
 

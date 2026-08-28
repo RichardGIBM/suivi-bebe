@@ -2127,7 +2127,10 @@ function exportLabJSON() {
   // §3.14 : on recalcule au clic, on construit le snapshot, on télécharge.
   const lab = Stats.sleepLab(Store.all(), { domainStart: DATA_START, birth: BIRTH });
   labLast = lab;
-  const snap = Stats.labExport(lab);
+  // Analyse de sensibilité à la segmentation (writing-block.md) : rétrospective
+  // uniquement, ajoutée dans l'export sans toucher au reste du laboratoire.
+  const sensitivity = Stats.sleepSegmentationSensitivity(Store.all(), { domainStart: DATA_START, birth: BIRTH });
+  const snap = Stats.labExport(lab, { segmentationSensitivity: sensitivity });
   const now = new Date();
   downloadText(`sleep-prediction-lab_${localYMD(now)}_${localHM(now).replace(':', '')}.json`,
     JSON.stringify(snap, null, 2), 'application/json');

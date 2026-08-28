@@ -602,7 +602,7 @@ sur le réseau.
 3. **CSV agrégat quotidien** (1 ligne = 1 jour) : tous les KPI /jour. `partiel=1` pour
    aujourd'hui et le jour de naissance ; colonnes couche/sommeil **vides** (jamais 0)
    tant que le domaine n'est pas fiable — pour ne pas induire l'analyse en erreur.
-4. **JSON du laboratoire** (`Stats.labExport(lab)`, schéma `sleep-prediction-lab/1.1`,
+4. **JSON du laboratoire** (`Stats.labExport(lab)`, schéma `sleep-prediction-lab/1.2`,
    bouton dans l'onglet Prédiction) : snapshot **auto-suffisant** destiné à être lu par un
    LLM — les **conventions de signe et les définitions voyagent dans le fichier**, pour
    qu'aucune spec ni conversation antérieure ne soit nécessaire pour l'interpréter.
@@ -613,6 +613,18 @@ sur le réseau.
    identifiant neutre (`baby-1`), **âge en jours**, aucune date de naissance, aucun nom.
    *(Le périmètre était « sommeil seul » en schéma 1.0 ; l'ajout des repas est ce qui a
    fait passer le schéma en 1.1.)*
+
+   Depuis le schéma 1.2, une section `segmentationSensitivity` s'ajoute au snapshot :
+   une analyse **rétrospective uniquement** (`mode: 'retrospective'`, `productionImpact:
+   false`) qui rejoue le pipeline de prédiction sur des « blocs de sommeil » où les
+   micro-réveils sont fusionnés sous un seuil (`RAW` + `B5`/`B10`/`B15`/`B20`/`B30`, en
+   minutes), pour vérifier si la convention actuelle — un épisode coupé à chaque réveil,
+   même de 2 minutes — déforme les métriques du laboratoire. Aucun impact sur le live :
+   ni `championModelId`, ni promotion, ni fusion réelle d'épisodes, ni UI ; tout reste
+   dans ce champ de l'export (`Stats.sleepSegmentationSensitivity`, appelé uniquement
+   par `exportLabJSON`). La variante `RAW` de cette section est, par construction,
+   identique à `performance` du laboratoire normal — c'est la non-régression garantie,
+   pas une deuxième implémentation censée coïncider.
 5. **JSON Baby Scientist** (`exportBabyScientistJSON`, extension `1.0.0`, contrat dans
    `SPECS-baby-scientist-export.md`) : le **même journal que le JSON brut** — même
    enveloppe `meta`, même tableau `events`, mêmes id, une seule lecture de `Store.all()`
@@ -650,7 +662,7 @@ sur le réseau.
 ## 10. PWA & hors-ligne (sw.js + manifest)
 
 - **Manifeste** : `standalone`, `portrait`, icônes maskables 192/512, thème blanc.
-- **Service worker** (`sw.js`, cache `suivi-bebe-v34`) :
+- **Service worker** (`sw.js`, cache `suivi-bebe-v36`) :
   - `install` → pré-cache la liste `ASSETS` (app shell + vendor + icônes).
   - `activate` → purge les anciens caches (≠ version courante).
   - `fetch` : **navigations** = réseau d'abord, repli sur `index.html` en cache ;
@@ -664,10 +676,12 @@ garderont l'ancienne version en cache. **Un test le vérifie dans les deux sens*
 donc l'oubli est bloquant, pas silencieux.
 
 Les numéros de version ne sont pas contigus : les assets ne bougent pas tous ensemble
-(`stats.js` est à `?v=31`, `config.js` à `?v=15`) et **la v29 n'a jamais existé** — le
+(`stats.js` est à `?v=33`, `config.js` à `?v=15`) et **la v29 n'a jamais existé** — le
 `CACHE` est passé de `v28` à `v30` (le prédictif touchait tellement de fichiers qu'il a
 pris le numéro suivant d'un coup). Pas un trou dans l'historique : `9ae6a6b` v27 →
-`4587a7d` v28 → `e048f9c` v30 → `70bcb74` v31 → `94dba9e` v32 → `a18601d` v33.
+`4587a7d` v28 → `e048f9c` v30 → `70bcb74` v31 → `94dba9e` v32 → `a18601d` v33 →
+`8d16a71` v34 (export Baby Scientist) → `e068963` v35 (âge dans l'entête) → v36
+(sensibilité à la segmentation du sommeil, §9).
 
 ---
 
