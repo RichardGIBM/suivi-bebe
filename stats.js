@@ -703,6 +703,89 @@ const Stats = {
     return S.durations.length > 0 || S.gaps.length > 0;
   },
 
+  /* ---------- Cascade multi-champions ASLEEP (writing-block (1).md) ----------
+     Deux primitives pures, mirroir exact des `predict()` de LAB_MODELS.M6/M2
+     (§3.8 plus bas) mais appliquées directement à `S.durations` — pas besoin
+     de construire un « cas » de labo pour un usage live. Ancrées à un `atMs`
+     explicite (jamais implicitement à « maintenant ») : c'est ce qui permet
+     de geler une prédiction déclenchée sans aucun cache (§25) — tant que le
+     dodo en cours n'est pas clos, aucun nouvel échantillon de durée ne peut
+     apparaître, donc rejouer le même `atMs` renvoie toujours le même résultat. */
+  _predictM6Wake(S, atMs) {
+    const night = this._labIsNight(new Date(atMs).getHours());
+    if (night == null) return null;
+    const w = this._predWindow(S.durations, atMs, this.SD_WINDOW_DAYS, this.SD_WINDOW_MAX_SAMPLES)
+      .filter(d => this._labIsNight(new Date(d.ep.startMs).getHours()) === night);
+    if (w.length < this.LAB_MIN_SUBGROUP_N) return null;
+    return { atMs: atMs + this._median(w.map(s => s.min)) * 60000 };
+  },
+  _predictRemainingSleep(S, atMs, elapsedSleepMin) {
+    const w = this._predWindow(S.durations, atMs, this.SD_WINDOW_DAYS, this.SD_WINDOW_MAX_SAMPLES);
+    if (w.length < this.SD_BACKTEST_MIN_TRAIN_SAMPLES) return null;
+    const longer = w.map(s => s.min).filter(v => v > elapsedSleepMin);
+    if (!longer.length) return null;
+    return { atMs: atMs + (this._median(longer) - elapsedSleepMin) * 60000 };
+  },
+
+  /* Cascade complète d'un dodo en cours — factorisée pour être appelable à
+     la fois depuis sleepPrediction() (affichage live) et _sleepLabFromSamples()
+     (export labo, §34) sans dupliquer la logique. Pure : ne dépend que de S
+     et de l'instant `nowMs` (jamais d'état caché). */
+  _wakeCascade(S, nowMs) {
+    const start = S.ongoing.startMs;
+    const duration = this._predDist(
+      this._predWindow(S.durations, start, this.SD_WINDOW_DAYS, this.SD_WINDOW_MAX_SAMPLES),
+      this.SD_MIN_SAMPLES_FOR_RANGE);
+    if (!duration.n) return null;
+
+    // Sentinel M0 : c'est EXACTEMENT le calcul historique (basis 'duree'
+    // avant ce changement) — juste réutilisé comme déclencheur interne de
+    // M2, plutôt que recalculé. Champion réveil initial = M6, repli M0 si
+    // M6 inapplicable (§8/§12-13). M2 se déclenche quand le sentinel M0 est
+    // dépassé (condition historiquement validée) ; M2v2, challenger pur,
+    // quand M6 est dépassé (§16-17) — jamais fusionnés, jamais recalculés
+    // en continu (§25/§46).
+    const m0Sentinel = {
+      atMs: start + duration.medianMin * 60000,
+      loMs: duration.p25Min != null ? start + duration.p25Min * 60000 : null,
+      hiMs: duration.p75Min != null ? start + duration.p75Min * 60000 : null,
+    };
+    const m6 = this._predictM6Wake(S, start);
+    const initialWake = m6
+      ? { atMs: m6.atMs, loMs: null, hiMs: null, modelId: 'M6', isFallback: false }
+      : { atMs: m0Sentinel.atMs, loMs: m0Sentinel.loMs, hiMs: m0Sentinel.hiMs, modelId: 'M0', isFallback: true, fallbackFor: 'M6' };
+
+    const m2 = nowMs >= m0Sentinel.atMs
+      ? this._predictRemainingSleep(S, m0Sentinel.atMs, (m0Sentinel.atMs - start) / 60000)
+      : null;
+    const m2v2 = (m6 && nowMs >= m6.atMs)
+      ? this._predictRemainingSleep(S, m6.atMs, (m6.atMs - start) / 60000)
+      : null;
+
+    const isFuture = x => !!x && x.atMs > nowMs;
+    // M2v2 n'apparaît jamais ici : c'est un challenger shadow, jamais la
+    // prédiction officielle (§23, Test 6/Test 7 de la spec).
+    const effectiveModelId = isFuture(m2) ? 'M2' : initialWake.modelId;
+    const effective = effectiveModelId === 'M2' ? { atMs: m2.atMs, loMs: null, hiMs: null } : initialWake;
+
+    const wake = {
+      atMs: effective.atMs, loMs: effective.loMs, hiMs: effective.hiMs,
+      basis: effectiveModelId === 'M2' ? 'm2' : (effectiveModelId === 'M6' ? 'm6' : 'm0-fallback'),
+      modelId: effectiveModelId,
+    };
+    if (effectiveModelId === 'M0' && initialWake.isFallback) { wake.isFallback = true; wake.fallbackFor = 'M6'; }
+    wake.beyondRange = wake.hiMs != null ? nowMs > wake.hiMs : nowMs > wake.atMs;
+
+    const wakeCascade = {
+      initialWake,
+      m0Sentinel,
+      m2: m2 ? { atMs: m2.atMs, valid: isFuture(m2), triggerModelId: 'M0', triggerElapsedSleepMin: (m0Sentinel.atMs - start) / 60000 } : null,
+      m2v2: m2v2 ? { atMs: m2v2.atMs, valid: isFuture(m2v2), triggerModelId: 'M6', triggerElapsedSleepMin: (m6.atMs - start) / 60000 } : null,
+      effectiveModelId,
+    };
+    return { wake, wakeCascade };
+  },
+
   /* ---------- Point d'entrée unique du prédictif ----------
      Même contrat d'appel que compute() : Stats.sleepPrediction(Store.all(), {
        now, domainStart: DATA_START, birth }).
@@ -761,7 +844,7 @@ const Stats = {
     /* ---- État et chaînage (§3.4) ---- */
     const lastClosed = S.closed.length ? S.closed[S.closed.length - 1] : null;
     const state = S.ongoing ? 'ASLEEP' : (lastClosed ? 'AWAKE' : 'UNKNOWN');
-    let wake = null, sinceMs = null;
+    let wake = null, sinceMs = null, wakeCascade = null;
 
     if (state === 'AWAKE') {
       sinceMs = lastClosed.endMs;
@@ -791,15 +874,8 @@ const Stats = {
       }
     } else if (state === 'ASLEEP') {
       sinceMs = S.ongoing.startMs;
-      if (duration.n) {
-        const start = S.ongoing.startMs;
-        wake = {
-          atMs: start + duration.medianMin * 60000, basis: 'duree',
-          loMs: duration.p25Min != null ? start + duration.p25Min * 60000 : null,
-          hiMs: duration.p75Min != null ? start + duration.p75Min * 60000 : null,
-        };
-        wake.beyondRange = wake.hiMs != null && nowMs > wake.hiMs;
-      }
+      const cascade = this._wakeCascade(S, nowMs);
+      if (cascade) { wake = cascade.wake; wakeCascade = cascade.wakeCascade; }
     }
 
     /* ---- Contexte (§3.1) ---- */
@@ -819,7 +895,7 @@ const Stats = {
     return {
       nowMs, state, sinceMs,
       sinceMin: sinceMs != null ? (nowMs - sinceMs) / 60000 : null,
-      onset, duration, wake,
+      onset, duration, wake, wakeCascade,
       quality1, quality2, roundtrip,
       context,
       ready: onset.n > 0 || duration.n > 0,
@@ -869,7 +945,7 @@ const Stats = {
      ========================================================= */
 
   // 1.1 : ajout additif des caractéristiques alimentaires et de la famille MF.
-  LAB_SCHEMA_VERSION: 'sleep-prediction-lab/1.2',
+  LAB_SCHEMA_VERSION: 'sleep-prediction-lab/1.3',
   LAB_SUBJECT_ID: 'baby-1',
 
   // §3.10 — constantes PRODUIT (points de départ ajustables), jamais
@@ -911,6 +987,12 @@ const Stats = {
     { key: 'onset', label: 'Endormissement', hint: 'ancré au dernier réveil réel' },
     { key: 'wake', label: 'Réveil', hint: 'ancré à l’endormissement réel' },
     { key: 'remaining', label: 'Réveil pendant le sommeil', hint: 'ré-estimation quand M0 est dépassé' },
+    // Population interne pour M2v2 : ancrée au walk-forward M6 (pas M0),
+    // séparée de `remaining` pour ne jamais mélanger les deux populations
+    // de cas dans _labPredictCase. Cible EXTERNE (export, UI) restée la
+    // même — "remaining" — par vocabulaire de spec (§31/§34) : `internal`
+    // signale à l'UI de ne pas la lister comme une cible de plus.
+    { key: 'remainingV2', label: 'Réveil pendant le sommeil (déclenché par M6)', hint: 'challenger M2v2 uniquement — jamais affiché comme prédiction', internal: true },
   ],
 
   _labMinTrain(target) {
@@ -996,6 +1078,19 @@ const Stats = {
         if (w.length < this.SD_BACKTEST_MIN_TRAIN_SAMPLES) return null;
         const longer = w.map(s => s.min).filter(v => v > c.features.elapsedSleepMin);
         if (!longer.length) return null;          // aucun précédent plus long : rien à dire
+        return this._median(longer) - c.features.elapsedSleepMin;
+      },
+    },
+    {
+      id: 'M2v2', label: 'Sommeil restant (déclenché par M6)', version: 1,
+      targets: ['remainingV2'], features: ['recentHistory', 'elapsedSleepMin'],
+      parameters: { windowDays: 14, windowMaxSamples: 40, conditional: 'D > elapsedSleep' },
+      note: 'Même formule que M2, appliquée à une population de cas ancrés à l’instant où M6 — pas M0 — aurait annoncé le réveil (§28). Challenger pur : ne devient jamais la prédiction affichée (§23), seulement comparé à M2 en apparié (§30).',
+      predict(c) {
+        const w = this._labWindow(c, 14, 40);
+        if (w.length < this.SD_BACKTEST_MIN_TRAIN_SAMPLES) return null;
+        const longer = w.map(s => s.min).filter(v => v > c.features.elapsedSleepMin);
+        if (!longer.length) return null;
         return this._median(longer) - c.features.elapsedSleepMin;
       },
     },
@@ -1194,7 +1289,7 @@ const Stats = {
     // cas garde le même identifiant d'un export à l'autre (ajouter des dodos
     // ne renumérote rien), sinon deux analyses successives ne parleraient pas
     // du même `wake-0042`.
-    const seq = { onset: 0, wake: 0, remaining: 0 };
+    const seq = { onset: 0, wake: 0, remaining: 0, remainingV2: 0 };
     const push = (target, asOfMs, anchorMs, realMs, realMin, features) => {
       out.push({
         id: `${target}-${String(++seq[target]).padStart(4, '0')}`,
@@ -1227,6 +1322,20 @@ const Stats = {
         // l'endormissement : entièrement dans le passé de l'ancre.
         ...this._labFeedFeat(feeds, d.ep.startMs),
       });
+      // Sonde `remainingV2` (§28) : ancrée au réveil que M6 — pas M0 — aurait
+      // annoncé en walk-forward. Population distincte de `remaining` (M0) ;
+      // gardée AVANT les `continue` du bloc M0 ci-dessous pour ne jamais être
+      // sautée par les gates de M0 (les deux sondes sont indépendantes).
+      const m6wf = this._predictM6Wake(S, d.ep.startMs);
+      if (m6wf && m6wf.atMs < d.atMs && this._boutRawAsleep(d.ep, m6wf.atMs)) {
+        push('remainingV2', m6wf.atMs, m6wf.atMs, d.atMs, (d.atMs - m6wf.atMs) / 60000, {
+          localHour: this._localHour(d.ep.startMs),
+          prevSleepMin: ix.dur(ix.prevOf(d.ep)),
+          prevWakeMin: ix.wakeBefore(d.ep),
+          elapsedSleepMin: (m6wf.atMs - d.ep.startMs) / 60000,
+          ...this._labFeedFeat(null, m6wf.atMs),
+        });
+      }
       // Sonde `remaining` : à l'heure que M0 annonçait, si bébé dormait encore.
       const w = this._predWindow(S.durations, d.ep.startMs, this.SD_WINDOW_DAYS, this.SD_WINDOW_MAX_SAMPLES);
       if (w.length < this.SD_BACKTEST_MIN_TRAIN_SAMPLES) continue;
@@ -1354,6 +1463,42 @@ const Stats = {
       };
     }
     return out;
+  },
+
+  /* Comparaison appariée M2v2 vs M2 (§30, writing-block (1).md) — les deux
+     tournent sur des populations de CAS DISTINCTES (`remaining` ancrée M0,
+     `remainingV2` ancrée M6, cf. _labCases) : _labPaired() ci-dessus est
+     câblé sur le champion global unique et ne convient pas. On apparie donc
+     à la main les deux cases qui partagent le même réveil réel (`realMs`),
+     seule clé commune aux deux populations. */
+  _labPairedM2v2VsM2(lab) {
+    const m2ByReal = new Map(), m2v2ByReal = new Map();
+    for (const c of lab.cases) {
+      if (c.target === 'remaining' && c.preds.M2) m2ByReal.set(c.realMs, c.preds.M2);
+      else if (c.target === 'remainingV2' && c.preds.M2v2) m2v2ByReal.set(c.realMs, c.preds.M2v2);
+    }
+    // Map en ordre d'insertion == ordre chronologique (lab.cases est trié
+    // par realMs) : gains reste chronologique, .slice(-10) est donc bien
+    // « les 10 plus récents », pas un échantillon arbitraire.
+    const gains = [];
+    for (const [realMs, predM2] of m2ByReal) {
+      const predM2v2 = m2v2ByReal.get(realMs);
+      if (!predM2v2) continue;
+      gains.push(predM2.absErrMin - predM2v2.absErrMin);
+    }
+    const eps = 1e-9;
+    const q = arr => { const v = arr.slice().sort((a, b) => a - b); return p => this._quantileSorted(v, p); };
+    const qg = q(gains);
+    return {
+      pairedN: gains.length,
+      medianGainMin: qg(0.5),
+      p25GainMin: gains.length >= 3 ? qg(0.25) : null,
+      p75GainMin: gains.length >= 3 ? qg(0.75) : null,
+      M2v2Wins: gains.filter(g => g > eps).length,
+      ties: gains.filter(g => Math.abs(g) <= eps).length,
+      M2v2Losses: gains.filter(g => g < -eps).length,
+      recent10MedianGainMin: this._median(gains.slice(-10)),
+    };
   },
 
   /* ---------- Vue du laboratoire à une date donnée (§3.8.4) ----------
@@ -1553,6 +1698,10 @@ const Stats = {
         },
       });
     }
+    // Cascade active (§21-22/§34) : même helper que sleepPrediction(), pour
+    // que labExport() puisse exposer les mêmes déclenchements M6/M2/M2v2 sans
+    // dupliquer la logique ni dépendre d'un état de rendu externe (predLast).
+    const wakeCascade = state === 'ASLEEP' ? this._wakeCascade(S, nowMs) : null;
     const ch = this._labChampion().id;
     const nowRows = [];
     for (const nc of nowCases) {
@@ -1577,6 +1726,7 @@ const Stats = {
       dataStartMs: isFinite(S.startMs) ? S.startMs : null,
       models: this.LAB_MODELS, targets: this.LAB_TARGETS, championId: ch,
       cases, view, weekly, checkpoints, nowRows,
+      wakeCascade: wakeCascade ? wakeCascade.wakeCascade : null,
       counts: {
         models: this.LAB_MODELS.length,
         instantiated: this.LAB_MODELS.filter(m => m.predict).length,
@@ -1843,6 +1993,39 @@ const Stats = {
       }
     }
 
+    /* Cascade active (§21/§33/§34, writing-block (1).md) : champions PAR
+       CIBLE — distincts du seul `championModelId` global ci-dessus, qui
+       reste la référence historique de comparaison du labo, pas le pilote
+       de l'affichage. M2v2 n'apparaît jamais comme champion (§33). */
+    const pairedM2v2VsM2 = this._labPairedM2v2VsM2(lab);
+    const currentPredictions = [];
+    if (lab.wakeCascade) {
+      const wc = lab.wakeCascade;
+      currentPredictions.push({
+        modelId: wc.initialWake.modelId, target: 'wake', role: 'initialWakeChampion',
+        status: 'active',
+        ...(wc.initialWake.isFallback ? { isFallback: true, fallbackFor: wc.initialWake.fallbackFor } : {}),
+        predicted: this._isoLocal(wc.initialWake.atMs),
+      });
+      if (wc.m2) {
+        currentPredictions.push({
+          modelId: 'M2', target: 'remaining', role: 'remainingChampion', status: 'active',
+          triggerModelId: wc.m2.triggerModelId, triggerMode: 'legacy-validated-sentinel',
+          triggerElapsedSleepMin: r(wc.m2.triggerElapsedSleepMin),
+          predicted: this._isoLocal(wc.m2.atMs),
+        });
+      }
+      if (wc.m2v2) {
+        currentPredictions.push({
+          modelId: 'M2v2', target: 'remaining', role: 'remainingChallenger',
+          status: pairedM2v2VsM2.pairedN >= this.FEATURE_EXPLORATION_MIN_PAIRED_N ? 'exploration' : 'shadow',
+          triggerModelId: wc.m2v2.triggerModelId, triggerMode: 'current-wake-champion',
+          triggerElapsedSleepMin: r(wc.m2v2.triggerElapsedSleepMin),
+          predicted: this._isoLocal(wc.m2v2.atMs),
+        });
+      }
+    }
+
     return {
       schemaVersion: this.LAB_SCHEMA_VERSION,
       generatedAt: this._isoLocal(lab.nowMs),
@@ -1857,9 +2040,13 @@ const Stats = {
         ageDaysAtExport: lab.ageDays,
         dataStartDate: lab.dataStartMs != null ? this._isoLocal(lab.dataStartMs).slice(0, 10) : null,
         timezone: tz,
+        // Déprécié depuis la cascade multi-champions (§8/§33) : conservé pour
+        // compatibilité, mais ne pilote plus rien — voir `champions` ci-dessous.
         championModelId: ch,
         state: lab.state,
       },
+      champions: { onset: 'M0', wake: 'M6', remaining: 'M2' },
+      challengers: { remaining: ['M2v2'] },
       conventions: {
         durationUnit: 'minutes',
         signedError: 'actual - predicted; positive means actual happened later',
@@ -1873,7 +2060,12 @@ const Stats = {
         feedFeatureGaps: 'all feeding features are null when no feed is known within 12h before the anchor; lastBottleMl is null when the last feed was breastfeeding',
       },
       models,
-      currentPredictions: lab.nowRows.map(row => ({
+      currentPredictions,
+      // Ex-`currentPredictions` (renommé) : vue shadow TOUS modèles/cibles à
+      // l'instant présent, y compris ceux qui ne pilotent aucun affichage —
+      // à ne pas confondre avec `currentPredictions` ci-dessus, qui ne liste
+      // que la cascade réellement active (§34).
+      shadowNowPredictions: lab.nowRows.map(row => ({
         modelId: row.modelId, target: row.target, applicable: row.applicable,
         predicted: row.predMs != null ? this._isoLocal(row.predMs) : null,
         deltaVsChampionMin: r(row.deltaVsChampionMin),
@@ -1882,6 +2074,16 @@ const Stats = {
       })),
       performance,
       pairwiseComparisonsVsChampion: pairwise,
+      pairedM2v2VsM2: {
+        pairedN: pairedM2v2VsM2.pairedN,
+        medianGainMin: r(pairedM2v2VsM2.medianGainMin),
+        p25GainMin: r(pairedM2v2VsM2.p25GainMin),
+        p75GainMin: r(pairedM2v2VsM2.p75GainMin),
+        M2v2Wins: pairedM2v2VsM2.M2v2Wins,
+        ties: pairedM2v2VsM2.ties,
+        M2v2Losses: pairedM2v2VsM2.M2v2Losses,
+        recent10MedianGainMin: r(pairedM2v2VsM2.recent10MedianGainMin),
+      },
       weeklyEvolution,
       checkpoints,
       experiments,

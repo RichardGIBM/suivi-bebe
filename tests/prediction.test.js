@@ -192,7 +192,7 @@ module.exports = ({ suite, test, eq, near, deepEq, ok, Stats }) => {
     const p = predict(evs, D(13, 15));
     eq(p.state, 'ASLEEP', 'état');
     eq(p.sinceMs, D(13, 14, 30).getTime(), 'endormi depuis 14:30');
-    eq(p.wake.basis, 'duree', 'plage = P25/P75 des durées récentes');
+    eq(p.wake.basis, 'm0-fallback', 'M6 inapplicable sur 6 échantillons (< LAB_MIN_SUBGROUP_N par sous-groupe) → repli M0');
     eq(p.wake.atMs, D(13, 15, 30).getTime(), '14:30 + durée médiane (60 min)');
     eq(p.wake.beyondRange, false, 'on est encore dans la plage');
     const tard = predict(evs, D(13, 16, 30));

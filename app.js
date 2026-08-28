@@ -1466,9 +1466,14 @@ function predRelHTML(p) {
   const since = p.sinceMs == null ? null : fmtDuration(Math.round((Date.now() - p.sinceMs) / 60000));
   if (p.state === 'ASLEEP') {
     const head = `💤 Endormi depuis ${hhmm(p.sinceMs)} · ${since}`;
-    if (p.wake && p.wake.hiMs != null && Date.now() > p.wake.hiMs) {
-      // Pas de « en retard » : ce n'est pas un rendez-vous manqué (§3.9).
-      return `${head} — au-delà de la plage habituelle observée.`;
+    // Pas de « en retard » : ce n'est pas un rendez-vous manqué (§3.9). Sans plage
+    // (cascade M6/M2, points sans loMs/hiMs), le seuil « dépassé » est l'instant
+    // lui-même — même règle que le beyondRange figé calculé côté stats.js.
+    if (p.wake) {
+      const boundary = p.wake.hiMs != null ? p.wake.hiMs : p.wake.atMs;
+      if (boundary != null && Date.now() > boundary) {
+        return `${head} — au-delà de l'estimation habituelle, en attente de réévaluation.`;
+      }
     }
     return p.wake ? `${head} — réveil estimé vers ${predClock(p.wake.atMs, p.nowMs)}.` : `${head}.`;
   }
@@ -1522,8 +1527,19 @@ function predWakeBlock(p) {
     ? ` <b>⚠️ plage large</b> : à cet âge, la durée de sommeil mélange siestes courtes et nuits longues — prends ça comme un ordre de grandeur, pas une promesse.`
     : '';
   const bornes = `entre <b>${w.loMs == null ? '—' : predClock(w.loMs, p.nowMs)}</b> et <b>${w.hiMs == null ? '—' : predClock(w.hiMs, p.nowMs)}</b>`;
+  // Cascade ASLEEP (§8/§23) : dépassée = déjà derrière nous, en attente du prochain
+  // seuil franchi — jamais présentée comme « en retard » (même esprit que predRelHTML).
+  const beyond = w.beyondRange ? ` <b>⏰ estimation dépassée</b> : elle sera réévaluée dès le prochain seuil franchi.` : '';
   let range;
-  if (w.loMs == null && p.duration.p25Min == null) {
+  if (w.basis === 'm6') {
+    range = `Estimation ponctuelle à partir des habitudes de sommeil à cette heure-ci — pas de plage : cette méthode calcule un instant précis, pas un intervalle.${beyond}`;
+  } else if (w.basis === 'm2') {
+    range = `Réestimation en cours, ce dodo dure déjà plus longtemps que d'habitude — l'heure a été recalculée à partir des fois où c'était déjà le cas. Pas de plage : cette méthode calcule un instant précis.${beyond}`;
+  } else if (w.basis === 'm0-fallback') {
+    range = w.loMs == null
+      ? `${med} — ${p.duration.n === 1 ? 'une seule mesure' : `${p.duration.n} mesures seulement`}, pas encore de plage possible (dès n=${Stats.SD_MIN_SAMPLES_FOR_RANGE}).${beyond}`
+      : `Le plus souvent ${bornes} d'après les durées récentes (${med}) — pas encore assez d'historique par créneau horaire pour affiner davantage.${wide}${beyond}`;
+  } else if (w.loMs == null && p.duration.p25Min == null) {
     range = `${med} — ${p.duration.n === 1 ? 'une seule mesure' : `${p.duration.n} mesures seulement`}, pas encore de plage possible (dès n=${Stats.SD_MIN_SAMPLES_FOR_RANGE}).`;
   } else if (w.loMs == null) {
     // Les durées ont déjà leur plage, mais le réveil part de l'endormissement ESTIMÉ :
@@ -1550,6 +1566,40 @@ function predWakeBlock(p) {
     <div class="est-hero">${predClock(w.atMs, p.nowMs)} <small>réveil</small> <span class="badge-chip">${t.emoji}</span></div>
     <div class="est-range">${range}</div>
     <div class="est-n">${foot}</div>`;
+}
+
+/* Panneau cascade de réveil (§8/§21-23) : libellés grand public — les noms littéraux
+   M6/M2/M2v2 restent réservés à la section labo (§22). Une seule ligne est
+   « affichée » (celle reprise dans le bloc estimation) ; les autres tournent en
+   parallèle, comparées, jamais mélangées ni recalculées en continu (§25/§46). */
+function predCascadeCard(p) {
+  const wc = p.wakeCascade;
+  if (!wc) return '';
+  const na = txt => `<span class="cascade-na">${txt}</span>`;
+  const node = (x, notYet) => {
+    if (!x) return na(notYet);
+    const stale = x.valid === false ? ' <small>(dépassée, non retenue)</small>' : '';
+    return `${predClock(x.atMs, p.nowMs)}${stale}`;
+  };
+  const row = (label, hint, val, active) => `
+    <div class="ctx-row${active ? ' cascade-active' : ''}">
+      <span class="cr-label">${label} <small>${hint}</small>${active ? ' <span class="badge-chip">● affiché plus haut</span>' : ''}</span>
+      <span class="cr-val">${val}</span>
+    </div>`;
+  const initHint = wc.initialWake.isFallback
+    ? 'méthode d’appoint — historique encore trop court par créneau horaire'
+    : 'à partir des habitudes de sommeil à cette heure-ci';
+  const rows = [
+    row('Réveil initial', initHint, node(wc.initialWake), wc.effectiveModelId !== 'M2'),
+    row('Réestimation validée', 'si ce dodo dure déjà plus longtemps que prévu', node(wc.m2, 'pas encore déclenchée'), wc.effectiveModelId === 'M2'),
+    row('Nouvelle méthode · expérimental', 'jamais affichée comme prédiction — seulement comparée à la ligne du dessus', node(wc.m2v2, 'pas encore déclenchée'), false),
+  ].join('');
+  return `
+    <div class="stat-card stat-card-wide">
+      <div class="sc-head"><div class="sc-title">Cascade de réveil</div></div>
+      <div class="ctx-list">${rows}</div>
+      <div class="est-n">Une seule de ces lignes est reprise dans l'estimation ci-dessus (celle marquée « affiché plus haut ») ; les autres sont calculées en parallèle et comparées, jamais fusionnées. Détails et noms de modèles dans le laboratoire plus bas.</div>
+    </div>`;
 }
 
 /* Carte « Qualité du backtest » : le chiffre, son badge, ses barres d'erreur. */
@@ -1666,9 +1716,11 @@ function renderPrediction() {
   const note = p.duration.n
     ? `Rappel : la durée de sommeil est plus dispersée que l'écart d'éveil à cet âge (siestes et nuits mélangées) — un écart plus grand ici est attendu, pas forcément un bug.`
     : '';
+  const cascade = predCascadeCard(p);
   const cards = [
     contexte,
     estimation,
+    cascade,
     predQualityCard('Qualité du backtest — endormissement', p.quality1,
       { why: `Il en faut ${Stats.BACKTEST_MIN_TRAIN_SAMPLES} écarts d'éveil avant le premier.` }),
     predQualityCard('Qualité du backtest — réveil', p.quality2,
@@ -1692,7 +1744,7 @@ function renderPrediction() {
     <div class="stat-grid">${cards}</div>
     <div class="lab-sep">
       <h2 class="section-label">🧪 Laboratoire Champion / Challengers</h2>
-      <p class="view-sub">Tout est calculé tôt, comparé en walk-forward et montré. Rien n'est promu automatiquement : <b>M0 reste le modèle affiché plus haut</b> tant qu'aucune décision humaine n'a été prise.</p>
+      <p class="view-sub">Tout est calculé tôt, comparé en walk-forward et montré. Seuls M0 (endormissement), M6 (réveil initial, repli M0) et M2 (réestimation) sont affichés plus haut ; tout le reste — dont M2v2 — tourne en pur challenger/shadow et n'est <b>jamais</b> promu automatiquement.</p>
     </div>
     <div class="stat-grid" id="labHost"></div>`;
 
@@ -1732,6 +1784,11 @@ const LAB_METRICS = [
   { key: 'p80', label: 'P80' },
   { key: 'bias', label: 'biais signé' },
 ];
+// Champions par cible affichés en direct (§8/§33) — miroir exact des mêmes
+// constantes dans Stats.labExport(). Pure UI : app.js ne choisit rien, il
+// nomme juste ce que stats.js applique déjà dans sleepPrediction().
+const LAB_CHAMPIONS = { onset: 'M0', wake: 'M6', remaining: 'M2' };
+const LAB_CHALLENGERS = { remaining: ['M2v2'] };
 const LAB_CASES_PAGE = 20;                  // cas affichés par palier (le reste est explicitement annoncé)
 let labLast = null;                         // dernier laboratoire calculé (source de tous les re-rendus)
 const labDismissed = new Set();             // suggestions écartées — en mémoire seulement
@@ -1750,10 +1807,13 @@ function labGainCell(v, extra) {
   const r = Math.round(v), cls = r > 0 ? 'err-ok' : (r < 0 ? 'err-mid' : '');
   return `<td class="${cls}">${predSigned(v)}${extra || ''}</td>`;
 }
-/* Cibles réellement backtestées : pas de sélecteur qui ne mène à rien. */
+/* Cibles réellement backtestées : pas de sélecteur qui ne mène à rien.
+   Les cibles internes (`remainingV2` — sonde M2v2, jamais une prédiction,
+   cf. LAB_TARGETS) restent hors des sélecteurs génériques champion-vs-M0 :
+   sa seule vitrine est la carte « Champions par cible ». */
 function labAvailTargets(lab) {
   const seen = new Set(lab.cases.map(c => c.target));
-  return Stats.LAB_TARGETS.filter(t => seen.has(t.key));
+  return Stats.LAB_TARGETS.filter(t => seen.has(t.key) && !t.internal);
 }
 function labSlotTarget(lab, slot) {
   const av = labAvailTargets(lab);
@@ -1839,6 +1899,42 @@ function labNowCard(lab) {
     ${blocks}
     <div class="est-n">Un écart indique seulement que les modèles <b>pensent différemment</b> : il ne dit pas lequel a raison — c'est la carte « Performance comparée » qui le dit. L'écart vs M0 est un écart de <i>prédiction</i> (+ = plus tard que M0), pas une erreur.<br>État : <b>${lab.state === 'ASLEEP' ? 'endormi' : (lab.state === 'AWAKE' ? 'éveillé' : 'inconnu')}</b> · calculé à ${hhmm(lab.nowMs)} <button type="button" class="lab-link" id="labRefresh">↻ recalculer</button></div>`,
     { id: 'lab-now' });
+}
+
+/* ---------- ①bis Champions par cible + M2v2 vs M2 (§8/§30/§33) ---------- */
+function labChampionsCard(lab) {
+  const rows = Object.entries(LAB_CHAMPIONS).map(([target, champId]) => {
+    const champ = labModel(lab, champId);
+    const chs = (LAB_CHALLENGERS[target] || []).map(id => labModel(lab, id).id).join(', ');
+    return `<tr>
+      <td>${labTargetLabel(target)}</td>
+      <td><b>${champ.id}</b> — ${champ.label}</td>
+      <td>${chs || '—'}</td>
+    </tr>`;
+  }).join('');
+
+  const pr = Stats._labPairedM2v2VsM2(lab);
+  const row = (l, v) => `<div class="dt-row"><span class="dt-l">${l}</span><span class="dt-v">${v}</span></div>`;
+  const cmp = !pr.pairedN
+    ? labEmpty('Aucun cas où M2 et M2v2 ont chacun déjà prédit le même réveil réel (n=0).')
+    : `
+      ${row('n comparable', pr.pairedN)}
+      ${row('Gain médian (M2v2 vs M2)', predSigned(pr.medianGainMin))}
+      ${pr.p25GainMin == null ? '' : row('P25 / P75 du gain', `${predSigned(pr.p25GainMin)} / ${predSigned(pr.p75GainMin)}`)}
+      ${row('M2v2 meilleur', `${pr.M2v2Wins} / ${pr.pairedN} cas${pr.ties ? ` (${pr.ties} égalité${plural(pr.ties)})` : ''}`)}
+      ${row('10 derniers cas', `gain médian ${predSigned(pr.recent10MedianGainMin)}`)}`;
+
+  return labCard('Champions par cible', `
+    <div class="lab-scroll"><table class="pred-table lab-table">
+      <thead><tr><th>Cible</th><th>Champion (affiché)</th><th>Challenger(s) shadow</th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table></div>
+    <div class="lab-block">
+      <div class="lab-block-title">M2v2 vs M2 <small>comparaison appariée, sur les mêmes réveils réels — jamais fusionnés (§30)</small></div>
+      ${cmp}
+    </div>
+    <div class="est-n">Gain = |erreur M2| − |erreur M2v2| sur exactement les mêmes cas (+ = M2v2 fait mieux). Quel que soit le résultat, M2v2 reste un pur challenger : il n'est jamais affiché comme prédiction — seule une décision humaine peut le promouvoir.</div>`,
+    { id: 'lab-champions' });
 }
 
 /* ---------- ③ Performance comparée (§3.8.2) ---------- */
@@ -2206,7 +2302,7 @@ function renderLab() {
   const host = document.getElementById('labHost');
   if (!lab || !host) return;
   host.innerHTML = [
-    labNowCard(lab), labPerfCard(lab), labEvoCard(lab),
+    labNowCard(lab), labChampionsCard(lab), labPerfCard(lab), labEvoCard(lab),
     labCheckpointCard(lab), labCasesCard(lab), labExpCard(lab), labExportCard(lab),
   ].join('');
 

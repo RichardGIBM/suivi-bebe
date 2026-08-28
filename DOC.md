@@ -58,6 +58,7 @@ Suivi bébé/
 │   ├── stats.test.js     #   règles de calcul (§7)
 │   ├── prediction.test.js#   prédictif : échantillons, backtests, états (§8)
 │   ├── lab.test.js       #   laboratoire Champion/Challengers (§8)
+│   ├── multichamp.test.js#   cascade M6/M2/M2v2 : déclenchements, repli, appariement (§8.4bis)
 │   ├── export.test.js    #   export Baby Scientist : couverture des données (§9)
 │   └── guards.test.js    #   gardes au niveau des sources
 ├── DOC.md                # Ce document (rétro-doc)
@@ -69,9 +70,9 @@ Suivi bébé/
 └── README.md             # Notes de lancement
 ```
 
-**Versionnage des assets** : les URL portent `?v=N` (aujourd'hui `styles.css?v=34`,
-`app.js?v=34`, `stats.js?v=32`, `config.js?v=15`) et le cache du service worker
-(`CACHE = 'suivi-bebe-v34'`) est aligné sur le **plus grand** de ces numéros.
+**Versionnage des assets** : les URL portent `?v=N` (aujourd'hui `styles.css?v=35`,
+`app.js?v=37`, `stats.js?v=34`, `config.js?v=15`) et le cache du service worker
+(`CACHE = 'suivi-bebe-v37'`) est aligné sur le **plus grand** de ces numéros.
 Toute mise à jour d'asset doit **incrémenter `N` dans `index.html` et reporter la même
 URL dans `ASSETS` de `sw.js`**, sinon les clients installés gardent l'ancienne version.
 Les trois invariants (`CACHE` = max des `?v=N`, `ASSETS` ⊇ URLs d'`index.html`, et
@@ -460,7 +461,7 @@ l'écran le dit. Un bandeau rappelle que la vue est expérimentale.
 
 ```js
 Stats.sleepPrediction(Store.all(), { now, domainStart: DATA_START, birth: BIRTH })
-// → { nowMs, state, sinceMs, sinceMin, onset, duration, wake,
+// → { nowMs, state, sinceMs, sinceMin, onset, duration, wake, wakeCascade,
 //     quality1, quality2, roundtrip, context, ready }
 ```
 
@@ -474,10 +475,16 @@ Stats.sleepPrediction(Store.all(), { now, domainStart: DATA_START, birth: BIRTH 
 
   | `basis` | Comment la plage est obtenue |
   |---|---|
-  | `roundtrip` | **calibrée sur l'erreur réellement observée** de la chaîne endormissement→réveil (P25/P75 des résidus signés) — le cas nominal |
-  | `somme` | repli tant qu'aucun aller-retour n'a été vérifié : somme des deux plages (trop large, annoncé comme tel) |
-  | `point` | médiane seule, aucune plage défendable |
-  | `duree` | état `ASLEEP` : plage des durées, ancrée au début du dodo réel |
+  | `roundtrip` | (état `AWAKE`) **calibrée sur l'erreur réellement observée** de la chaîne endormissement→réveil (P25/P75 des résidus signés) — le cas nominal |
+  | `somme` | (état `AWAKE`) repli tant qu'aucun aller-retour n'a été vérifié : somme des deux plages (trop large, annoncé comme tel) |
+  | `point` | (état `AWAKE`) médiane seule, aucune plage défendable |
+  | `m6` | (état `ASLEEP`) réveil initial via **M6** — point, aucune plage (§8.4) |
+  | `m2` | (état `ASLEEP`) réestimation via **M2**, une fois le sentinel M0 dépassé — point, aucune plage (§8.4) |
+  | `m0-fallback` | (état `ASLEEP`) M6 inapplicable (< 5 échantillons du bon créneau jour/nuit) : repli sur M0, plage des durées si dispo |
+
+  `wake.beyondRange` est **généralisé** : `nowMs > hiMs` s'il y a une plage, sinon
+  `nowMs > atMs` pour les prédictions ponctuelles (m6/m2) — même intention (« c'est
+  dépassé »), étendue proprement aux points sans plage.
 
 ### 8.3 Backtests walk-forward, sans fuite du futur
 
@@ -498,25 +505,64 @@ prédiction « telle qu'elle était à S6 » ne peut donc jamais emprunter des d
 `Stats.sleepLab(events, { domainStart, birth })` — même philosophie : **tout calculer
 tôt, tout comparer en walk-forward, tout montrer, ne rien promouvoir automatiquement.**
 
-- **M0 « Baseline récente » est le champion** : médiane sur 14 j / 40 échantillons —
-  c'est *lui* que `sleepPrediction` affiche. Il sert d'**expérience contrôle**.
-- **12 challengers** (11 implémentés + 1 déclaré) **en shadow mode** : ils produisent
-  prédiction + backtest sans **aucun** effet sur l'estimation affichée.
+Depuis la cascade multi-champions (`writing-block` — *« Promotion M6 / M2 et
+expérimentation parallèle M2v2 »*), **il n'y a plus un champion unique, mais un champion
+par cible** — c'est ce que `sleepPrediction()` affiche réellement :
+
+| Cible | Champion affiché | Repli |
+|---|---|---|
+| `onset` (endormissement) | **M0** — inchangé | — |
+| `wake` (réveil initial, dès l'endormissement réel) | **M6** (structure jour/nuit) | **M0** si M6 inapplicable (< 5 échantillons du bon créneau, `LAB_MIN_SUBGROUP_N`) |
+| `remaining` (réveil ré-estimé, dodo déjà en cours) | **M2** — déclenché quand le **sentinel M0** (l'ancien calcul de réveil) est dépassé | — |
+
+**M2v2** est un **pur challenger shadow** sur `remaining` : même formule que M2, mais
+déclenché quand **M6** est dépassé plutôt que le sentinel M0. Il n'est **jamais** la
+prédiction affichée (`wakeCascade.effectiveModelId` ne vaut jamais `'M2v2'`) — seulement
+comparé à M2 en cas apparié (§8.4bis). Les 10 autres challengers restent en shadow mode
+classique : ils produisent prédiction + backtest sans **aucun** effet sur l'estimation
+affichée.
 
 | Famille | Modèles |
 |---|---|
-| Sommeil seul | **M1** récence/fenêtre courte · **M2** sommeil restant · **M3** contexte horaire · **M4** sommeil précédent · **M5** éveil précédent · **M6** structure jour/nuit · **M7** récence pondérée (demi-vie 72 h) |
+| Sommeil seul | **M1** récence/fenêtre courte · **M2** sommeil restant (champion `remaining`) · **M3** contexte horaire · **M4** sommeil précédent · **M5** éveil précédent · **M6** structure jour/nuit (champion `wake`) · **M7** récence pondérée (demi-vie 72 h) |
+| Challenger dédié | **M2v2** — même formule que M2, déclenché par M6 plutôt que par le sentinel M0 ; cible interne `remainingV2` |
 | Rythme des repas | **MF1** délai depuis le dernier repas · **MF2** type du dernier repas · **MF3** volume du dernier biberon · **MF4** grappe de repas (3 h) |
 | Déclaré, non implémenté | **M8** hybride ciblé (`predict` absent — un test vérifie qu'aucun bouton ne prétend le lancer) |
 
-**Trois cibles** (`LAB_TARGETS`) : `onset` (endormissement), `wake` (réveil), et
-`remaining` — le réveil **ré-estimé pendant que bébé dort encore**, avec la sonde placée
-à l'heure que M0 avait annoncée : ce cas n'existe donc que si l'épisode a **dépassé** la
-prédiction du champion.
+**Quatre cibles** (`LAB_TARGETS`) : `onset` (endormissement), `wake` (réveil initial),
+`remaining` (réveil ré-estimé, sonde ancrée à l'heure que le **sentinel M0** avait
+annoncée — n'existe que si l'épisode l'a dépassée), et `remainingV2` — cible **interne**
+(`internal: true`, exclue des sélecteurs génériques champion-vs-M0 côté `app.js`), sonde
+symétrique ancrée au walk-forward **M6** plutôt qu'au sentinel M0, réservée à M2v2.
 
-**Comparaison appariée** : le gain d'un challenger est `|err(M0)| − |err(Mx)|` **sur les
-cas où les deux ont prédit**. Comparer deux moyennes calculées sur des cas différents ne
-voudrait rien dire.
+**Comparaison appariée classique** : le gain d'un challenger est `|err(M0)| − |err(Mx)|`
+**sur les cas où les deux ont prédit**. Comparer deux moyennes calculées sur des cas
+différents ne voudrait rien dire.
+
+### 8.4bis Cascade ASLEEP et M2v2 vs M2 (§8/§23/§30 de la spec)
+
+`_wakeCascade(S, nowMs)` (factorisée, appelée depuis `sleepPrediction()` **et**
+`sleepLab()` pour ne jamais dupliquer la logique) calcule, à partir du seul dodo en
+cours :
+
+1. **`m0Sentinel`** = exactement l'ancien calcul de réveil (médiane/P25/P75 des durées,
+   ancré au début du dodo réel) — conservé comme **déclencheur interne** de M2, plutôt
+   que recalculé.
+2. **`m6`** (`_predictM6Wake`) et **`initialWake`** = M6 si applicable, sinon repli M0.
+3. **`m2`** — seulement si `nowMs >= m0Sentinel.atMs` — et **`m2v2`** — seulement si
+   `nowMs >= m6.atMs` — chacun via `_predictRemainingSleep`, jamais recalculé en continu
+   (une seule estimation par déclenchement, jusqu'au réveil réel).
+4. **`effectiveModelId`** = `'M2'` si M2 est encore dans le futur, sinon le modèle de
+   `initialWake` (M6 ou repli M0). **M2v2 n'apparaît jamais ici** — il reste visible
+   uniquement dans `wakeCascade.m2v2`, jamais fusionné à `wake`.
+
+Au réveil réel, `state` repasse `AWAKE` et `wakeCascade` redevient `null` : aucun état de
+la cascade ne survit au-delà du dodo qui l'a produite.
+
+**`Stats._labPairedM2v2VsM2(lab)`** apparie les cas `remaining`/`remainingV2` sur le
+**même réveil réel** : `gain = |err(M2)| − |err(M2v2)|` (+ = M2v2 meilleur), avec
+`medianGainMin`, `p25/p75GainMin`, `M2v2Wins/ties/Losses`, `recent10MedianGainMin`.
+Affiché côté `app.js` par la carte labo **« Champions par cible »**.
 
 ### 8.5 Cycle de vie d'une expérience (modèle × cible)
 
@@ -559,10 +605,17 @@ S8 heure, S10 mémoire courte, S12 structure, S16 récence adaptative.
 ### 8.8 Rendu (app.js) et non-persistance
 
 `renderPrediction()` affiche : carte **Contexte** (âge, jours de sommeil suivis, épisodes
-retenus, exclusions), **estimation du moment** (🌙 endormissement / 🌅 réveil), 3 cartes
-de qualité (endormissement / réveil / aller-retour), 2 tableaux prédiction-vs-réalité,
-puis `renderLab()` → 7 cartes (état du moment, performance, évolution par semaine d'âge,
-checkpoints, cas, expériences, export).
+retenus, exclusions), **estimation du moment** (🌙 endormissement / 🌅 réveil), puis — en
+état `ASLEEP` seulement — la carte **Cascade de réveil** (`predCascadeCard`, §8.4bis) :
+trois lignes en libellés grand public (« Réveil initial », « Réestimation validée »,
+« Nouvelle méthode · expérimental »), une seule marquée « affiché plus haut » — les noms
+littéraux M6/M2/M2v2 restent réservés à la section labo (§22 de la spec). Suivent 3 cartes
+de qualité (endormissement / réveil / aller-retour), 2 tableaux prédiction-vs-réalité, puis
+`renderLab()` → **8 cartes** (état du moment, **Champions par cible** — `labChampionsCard`,
+mirroir non-persistant de `champions`/`challengers`/`_labPairedM2v2VsM2`, §8.4bis —,
+performance, évolution par semaine d'âge, checkpoints, cas, expériences, export). La cible
+interne `remainingV2` reste hors des sélecteurs génériques champion-vs-M0 (`labAvailTargets`
+l'exclut) : sa seule vitrine est cette carte dédiée.
 
 Trois détails de rendu qui ont chacun une raison :
 
@@ -602,7 +655,7 @@ sur le réseau.
 3. **CSV agrégat quotidien** (1 ligne = 1 jour) : tous les KPI /jour. `partiel=1` pour
    aujourd'hui et le jour de naissance ; colonnes couche/sommeil **vides** (jamais 0)
    tant que le domaine n'est pas fiable — pour ne pas induire l'analyse en erreur.
-4. **JSON du laboratoire** (`Stats.labExport(lab)`, schéma `sleep-prediction-lab/1.2`,
+4. **JSON du laboratoire** (`Stats.labExport(lab)`, schéma `sleep-prediction-lab/1.3`,
    bouton dans l'onglet Prédiction) : snapshot **auto-suffisant** destiné à être lu par un
    LLM — les **conventions de signe et les définitions voyagent dans le fichier**, pour
    qu'aucune spec ni conversation antérieure ne soit nécessaire pour l'interpréter.
@@ -625,6 +678,17 @@ sur le réseau.
    par `exportLabJSON`). La variante `RAW` de cette section est, par construction,
    identique à `performance` du laboratoire normal — c'est la non-régression garantie,
    pas une deuxième implémentation censée coïncider.
+
+   Le schéma 1.3 (cascade M6/M2/M2v2, §8.4/§8.4bis) ajoute `champions`
+   (`{onset:"M0", wake:"M6", remaining:"M2"}`) et `challengers` (`{remaining:["M2v2"]}`),
+   remplace `championModelId` unique comme source de vérité de l'affichage (champ gardé,
+   marqué déprécié en commentaire), ajoute `pairedM2v2VsM2` (sortie de
+   `_labPairedM2v2VsM2`), et **renomme** l'ancien `currentPredictions` en
+   `shadowNowPredictions` — `currentPredictions` désigne désormais la cascade activement
+   affichée (M6/M2/M2v2 avec `role`/`status`/`triggerModelId`/`predicted`). `app.js` ne
+   lisait déjà pas ce champ dans le JSON (il lit `lab.nowRows` en mémoire), donc ce
+   renommage n'a aucun effet sur l'UI — seulement sur un éventuel outil externe qui
+   consommerait le JSON exporté.
 5. **JSON Baby Scientist** (`exportBabyScientistJSON`, extension `1.0.0`, contrat dans
    `SPECS-baby-scientist-export.md`) : le **même journal que le JSON brut** — même
    enveloppe `meta`, même tableau `events`, mêmes id, une seule lecture de `Store.all()`
@@ -662,7 +726,7 @@ sur le réseau.
 ## 10. PWA & hors-ligne (sw.js + manifest)
 
 - **Manifeste** : `standalone`, `portrait`, icônes maskables 192/512, thème blanc.
-- **Service worker** (`sw.js`, cache `suivi-bebe-v36`) :
+- **Service worker** (`sw.js`, cache `suivi-bebe-v37`) :
   - `install` → pré-cache la liste `ASSETS` (app shell + vendor + icônes).
   - `activate` → purge les anciens caches (≠ version courante).
   - `fetch` : **navigations** = réseau d'abord, repli sur `index.html` en cache ;
@@ -676,12 +740,13 @@ garderont l'ancienne version en cache. **Un test le vérifie dans les deux sens*
 donc l'oubli est bloquant, pas silencieux.
 
 Les numéros de version ne sont pas contigus : les assets ne bougent pas tous ensemble
-(`stats.js` est à `?v=33`, `config.js` à `?v=15`) et **la v29 n'a jamais existé** — le
+(`stats.js` est à `?v=34`, `config.js` à `?v=15`) et **la v29 n'a jamais existé** — le
 `CACHE` est passé de `v28` à `v30` (le prédictif touchait tellement de fichiers qu'il a
 pris le numéro suivant d'un coup). Pas un trou dans l'historique : `9ae6a6b` v27 →
 `4587a7d` v28 → `e048f9c` v30 → `70bcb74` v31 → `94dba9e` v32 → `a18601d` v33 →
 `8d16a71` v34 (export Baby Scientist) → `e068963` v35 (âge dans l'entête) → v36
-(sensibilité à la segmentation du sommeil, §9).
+(sensibilité à la segmentation du sommeil, §9) → v37 (cascade M6/M2/M2v2, §8.4/§8.4bis —
+**pas encore commitée** au moment où cette ligne est écrite).
 
 ---
 

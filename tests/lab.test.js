@@ -113,8 +113,12 @@ module.exports = ({ suite, test, eq, near, deepEq, ok, Stats }) => {
     eq(CH, 'M0', 'champion');
     eq(Stats.LAB_MODELS.filter(m => m.champion).length, 1, 'un seul champion');
     for (const m of Stats.LAB_MODELS) {
-      // Deux familles d'ids : `M*` (sommeil seul) et `MF*` (rythme des repas).
-      ok(/^MF?\d+$/.test(m.id), `id ${m.id}`);
+      // Trois familles d'ids : `M*` (sommeil seul), `MF*` (rythme des repas),
+      // et `M*v*` pour un challenger versionné qui réutilise la même formule
+      // qu'un modèle existant sur une population différente (ex. M2v2, §17
+      // writing-block (1).md) — jamais un numéro de version libre, toujours
+      // suffixe explicite du modèle dont il dérive.
+      ok(/^MF?\d+(v\d+)?$/.test(m.id), `id ${m.id}`);
       ok(typeof m.label === 'string' && m.label, `label de ${m.id}`);
       eq(typeof m.version, 'number', `version de ${m.id}`);
       ok(Array.isArray(m.targets) && Array.isArray(m.features), `targets/features de ${m.id}`);
