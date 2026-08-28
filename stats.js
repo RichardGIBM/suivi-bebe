@@ -983,6 +983,11 @@ const Stats = {
   },
   LAB_CHECKPOINT_GENERAL: { label: 'Revue générale', models: null, watch: 'champion vs challengers, dérive, candidats à retester — ne pas complexifier sans amélioration nette' },
   LAB_STATUS_ORDER: ['collecting', 'shadow', 'exploration', 'confirming', 'active', 'rejected'],
+  // Champion de PRODUCTION par cible (§21/§33/§34) — source unique, réutilisée
+  // par _labView() (statut « actif ») et labExport() (`champions`), pour que
+  // labo et cascade affichée ne puissent jamais se contredire sur qui est
+  // champion. `remainingV2` (interne, M2v2) n'a pas de champion : jamais promu.
+  LAB_TARGET_CHAMPIONS: { onset: 'M0', wake: 'M6', remaining: 'M2' },
   LAB_TARGETS: [
     { key: 'onset', label: 'Endormissement', hint: 'ancré au dernier réveil réel' },
     { key: 'wake', label: 'Réveil', hint: 'ancré à l’endormissement réel' },
@@ -1509,6 +1514,9 @@ const Stats = {
   _labView(cases, asOfMs) {
     const known = cases.filter(c => c.realMs <= asOfMs);
     const ch = this._labChampion().id;
+    // Champion de PRODUCTION pour la cible `t` (§21/§33/§34) : M6 sur `wake`,
+    // M2 sur `remaining`, M0 partout ailleurs (dont `onset`, jamais délogé).
+    const champFor = t => this.LAB_TARGET_CHAMPIONS[t] || ch;
     const perf = {}, paired = {}, status = {}, byTarget = {};
 
     for (const m of this.LAB_MODELS) {
@@ -1516,7 +1524,14 @@ const Stats = {
       for (const t of m.targets) {
         const rows = known.filter(c => c.target === t && c.preds[m.id]);
         perf[m.id][t] = this._labPerf(rows, m.id);
-        if (m.id !== ch) paired[m.id][t] = this._labPaired(known, m.id, t);
+        // M0 vs M0 n'a pas de sens : jamais apparié, quelle que soit la cible.
+        if (m.id === ch) continue;
+        // `remainingV2` (M2v2) n'a jamais M0 comme prédiction sur le même cas
+        // (M0 ne cible pas `remainingV2`) : le `_labPaired` générique serait
+        // structurellement vide. Même source que labChampionsCard.
+        paired[m.id][t] = (t === 'remainingV2')
+          ? this._labPairedM2v2VsM2({ cases: known })
+          : this._labPaired(known, m.id, t);
       }
     }
 
@@ -1527,9 +1542,15 @@ const Stats = {
       for (const t of m.targets) {
         const p = paired[m.id][t];
         let st = 'collecting', why = '';
-        if (m.id === ch) { st = 'active'; why = 'Champion : c’est lui qui est affiché.'; }
+        if (m.id === ch) {
+          st = 'active';
+          why = (m.id === champFor(t))
+            ? 'Champion en production pour cette cible : c’est lui qui est affiché.'
+            : `Champion historique : sur cette cible, c’est désormais ${champFor(t)} qui est affiché — ${m.id} continue de tourner comme référence de comparaison pour les autres modèles.`;
+        }
+        else if (m.id === champFor(t)) { st = 'active'; why = 'Champion en production pour cette cible : c’est lui qui est affiché.'; }
         else if (!m.predict) { st = 'collecting'; why = m.blocked || ''; }
-        else if (!p || !p.pairedN) { st = 'collecting'; why = 'Aucun cas comparable à M0 pour l’instant.'; }
+        else if (!p || !p.pairedN) { st = 'collecting'; why = `Aucun cas comparable à ${ch} pour l’instant.`; }
         else if (m.requiresDivergence && !p.diverged) { st = 'collecting'; why = 'Les deux fenêtres donnent encore exactement la même prédiction.'; }
         else if (p.pairedN < this.FEATURE_EXPLORATION_MIN_PAIRED_N) { st = 'shadow'; why = `${p.pairedN} cas appariés : trop peu pour lire un signal (seuil ${this.FEATURE_EXPLORATION_MIN_PAIRED_N}).`; }
         else if (p.freezeAt != null) { st = 'confirming'; why = 'Gelé pour confirmation sur un bloc de cas non recouvrant.'; }
@@ -1894,6 +1915,9 @@ const Stats = {
     for (const m of lab.models) {
       if (m.id === ch) continue;
       for (const t of m.targets) {
+        // `remainingV2` (M2v2) a une forme différente (référence M2, pas M0)
+        // et sa propre sortie dédiée : `pairedM2v2VsM2` ci-dessous.
+        if (t === 'remainingV2') continue;
         const p = (view.paired[m.id] || {})[t];
         if (!p || !p.pairedN) continue;
         pairwise.push({
@@ -1976,6 +2000,9 @@ const Stats = {
     for (const m of lab.models) {
       if (m.id === ch) continue;
       for (const t of m.targets) {
+        // `remainingV2` (M2v2) : même exclusion que `pairwise` ci-dessous —
+        // forme différente, référence M2, déjà couverte par `pairedM2v2VsM2`.
+        if (t === 'remainingV2') continue;
         const p = (view.paired[m.id] || {})[t];
         if (!p || !p.pairedN) continue;
         const bt = view.byTarget[m.id][t];
@@ -2045,7 +2072,7 @@ const Stats = {
         championModelId: ch,
         state: lab.state,
       },
-      champions: { onset: 'M0', wake: 'M6', remaining: 'M2' },
+      champions: this.LAB_TARGET_CHAMPIONS,
       challengers: { remaining: ['M2v2'] },
       conventions: {
         durationUnit: 'minutes',

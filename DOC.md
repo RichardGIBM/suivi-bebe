@@ -23,7 +23,7 @@ temps réel, tout en restant **utilisable hors-ligne**.
 | Langue / cible | Français, **mobile-first** (max 560 px, safe-areas iOS) |
 | Modèle de données | **Un seul journal d'événements** `{ id, action, data, ts, deleted }` |
 | Vues | Suivi · Appris · Stats · **Prédiction** (expérimentale, conditionnelle) |
-| Tests | `node tests/run.js` — sans dépendance, **103 cas**, TZ forcé (§12) |
+| Tests | `node tests/run.js` — sans dépendance, **149 cas**, TZ forcé (§12) |
 
 Principe fondateur : **une seule source de vérité, le journal d'événements brut**.
 Aucune statistique n'est stockée — tout est **recalculé à la volée**. Corriger un
@@ -58,7 +58,8 @@ Suivi bébé/
 │   ├── stats.test.js     #   règles de calcul (§7)
 │   ├── prediction.test.js#   prédictif : échantillons, backtests, états (§8)
 │   ├── lab.test.js       #   laboratoire Champion/Challengers (§8)
-│   ├── multichamp.test.js#   cascade M6/M2/M2v2 : déclenchements, repli, appariement (§8.4bis)
+│   ├── multichamp.test.js#   cascade M6/M2/M2v2 : déclenchements, appariement (§8.4bis),
+│   │                     #   champions par cible dans le labo (§8.5)
 │   ├── export.test.js    #   export Baby Scientist : couverture des données (§9)
 │   └── guards.test.js    #   gardes au niveau des sources
 ├── DOC.md                # Ce document (rétro-doc)
@@ -71,8 +72,8 @@ Suivi bébé/
 ```
 
 **Versionnage des assets** : les URL portent `?v=N` (aujourd'hui `styles.css?v=35`,
-`app.js?v=37`, `stats.js?v=34`, `config.js?v=15`) et le cache du service worker
-(`CACHE = 'suivi-bebe-v37'`) est aligné sur le **plus grand** de ces numéros.
+`app.js?v=38`, `stats.js?v=35`, `config.js?v=15`) et le cache du service worker
+(`CACHE = 'suivi-bebe-v38'`) est aligné sur le **plus grand** de ces numéros.
 Toute mise à jour d'asset doit **incrémenter `N` dans `index.html` et reporter la même
 URL dans `ASSETS` de `sw.js`**, sinon les clients installés gardent l'ancienne version.
 Les trois invariants (`CACHE` = max des `?v=N`, `ASSETS` ⊇ URLs d'`index.html`, et
@@ -581,6 +582,17 @@ Le statut d'un modèle = le **plus avancé** de ses expériences. Les seuils son
 constantes **produit** assumées (`FEATURE_*`), jamais des frontières biologiques et
 jamais déduites de l'âge du bébé.
 
+**Exception structurelle** : le champion de production d'une cible
+(`Stats.LAB_TARGET_CHAMPIONS` — M0/`onset`, M6/`wake`, M2/`remaining`) est `active` sur
+cette cible **par construction**, quel que soit le nombre de cas appariés — il ne
+traverse pas ce cycle, il **est** la référence à laquelle les autres se comparent (bug
+corrigé en v38 : avant, M6/`wake` et M2/`remaining` restaient affichés `shadow` /
+`exploration` / `confirming` **contre M0**, comme n'importe quel challenger pas encore
+promu, en contradiction directe avec la cascade qu'ils pilotaient déjà en production).
+M0 reste actif partout, mais pour deux raisons désormais distinctes : champion affiché
+sur `onset`, **référence historique de comparaison** (plus jamais affichée) sur `wake` et
+`remaining`.
+
 ### 8.6 Les repas comme challengers (et les données qu'on refuse d'inventer)
 
 Le rythme des repas entre dans le prédictif **en challenger mesuré**, jamais en règle
@@ -627,7 +639,12 @@ Trois détails de rendu qui ont chacun une raison :
 - **Bandeau de suggestions** (`labSuggestions()` → `#labSuggest`) : ce que le labo
   propose de regarder maintenant (une expérience prête à confirmer, un checkpoint
   atteint). Chaque suggestion est **écartable** — et `labDismissed` étant en mémoire,
-  elle revient au prochain passage sur l'onglet : rien n'est masqué durablement.
+  elle revient au prochain passage sur l'onglet : rien n'est masqué durablement. Un
+  champion de production (par cible, `LAB_TARGET_CHAMPIONS`) ou une cible interne
+  (`remainingV2`) ne génèrent **jamais** de suggestion de confirmation/promotion — déjà
+  affiché ou hors périmètre de promotion, ça n'a rien à proposer (bug corrigé en v38 :
+  avant, M6/`wake` et M2/`remaining` continuaient de déclencher des bannières
+  « vouloir confirmer/promouvoir ? » pour des modèles déjà en production).
 - **Pagination des cas explicite** : `LAB_CASES_PAGE = 20` cas par palier, et le reste
   est **annoncé** (« Afficher N cas de plus ») au lieu d'être tronqué en silence — un
   tableau qui s'arrête sans le dire se lit comme un tableau complet.
@@ -683,7 +700,11 @@ sur le réseau.
    (`{onset:"M0", wake:"M6", remaining:"M2"}`) et `challengers` (`{remaining:["M2v2"]}`),
    remplace `championModelId` unique comme source de vérité de l'affichage (champ gardé,
    marqué déprécié en commentaire), ajoute `pairedM2v2VsM2` (sortie de
-   `_labPairedM2v2VsM2`), et **renomme** l'ancien `currentPredictions` en
+   `_labPairedM2v2VsM2`) — la cible interne `remainingV2` en est la **seule** vitrine :
+   `pairwiseComparisonsVsChampion` et `experiments`, génériques et pensés pour une
+   comparaison **à M0**, l'excluent explicitement (bug corrigé en v38 : forcée dans leur
+   forme `wins`/`losses`/`championMedAbsMin`, qui n'est pas celle de M2v2, elle y
+   produisait des champs `NaN`) —, et **renomme** l'ancien `currentPredictions` en
    `shadowNowPredictions` — `currentPredictions` désigne désormais la cascade activement
    affichée (M6/M2/M2v2 avec `role`/`status`/`triggerModelId`/`predicted`). `app.js` ne
    lisait déjà pas ce champ dans le JSON (il lit `lab.nowRows` en mémoire), donc ce
@@ -726,7 +747,7 @@ sur le réseau.
 ## 10. PWA & hors-ligne (sw.js + manifest)
 
 - **Manifeste** : `standalone`, `portrait`, icônes maskables 192/512, thème blanc.
-- **Service worker** (`sw.js`, cache `suivi-bebe-v37`) :
+- **Service worker** (`sw.js`, cache `suivi-bebe-v38`) :
   - `install` → pré-cache la liste `ASSETS` (app shell + vendor + icônes).
   - `activate` → purge les anciens caches (≠ version courante).
   - `fetch` : **navigations** = réseau d'abord, repli sur `index.html` en cache ;
@@ -740,13 +761,16 @@ garderont l'ancienne version en cache. **Un test le vérifie dans les deux sens*
 donc l'oubli est bloquant, pas silencieux.
 
 Les numéros de version ne sont pas contigus : les assets ne bougent pas tous ensemble
-(`stats.js` est à `?v=34`, `config.js` à `?v=15`) et **la v29 n'a jamais existé** — le
+(`stats.js` est à `?v=35`, `config.js` à `?v=15`) et **la v29 n'a jamais existé** — le
 `CACHE` est passé de `v28` à `v30` (le prédictif touchait tellement de fichiers qu'il a
 pris le numéro suivant d'un coup). Pas un trou dans l'historique : `9ae6a6b` v27 →
 `4587a7d` v28 → `e048f9c` v30 → `70bcb74` v31 → `94dba9e` v32 → `a18601d` v33 →
-`8d16a71` v34 (export Baby Scientist) → `e068963` v35 (âge dans l'entête) → v36
-(sensibilité à la segmentation du sommeil, §9) → v37 (cascade M6/M2/M2v2, §8.4/§8.4bis —
-**pas encore commitée** au moment où cette ligne est écrite).
+`8d16a71` v34 (export Baby Scientist) → `e068963` v35 (âge dans l'entête) → `dc15fdf` v36
+(sensibilité à la segmentation du sommeil, §9) → `61ef1d9` v37 (cascade M6/M2/M2v2,
+§8.4/§8.4bis) → v38 (le labo se met d'accord avec sa propre cascade côté affichage :
+champions par cible enfin `active` dans la vue labo, bandeau de suggestions qui ne parle
+plus de promouvoir ce qui l'est déjà, M2v2 disparu de l'onglet public et des exports
+génériques — §8.5/§8.8/§9 ; **pas encore commitée** au moment où cette ligne est écrite).
 
 ---
 
@@ -786,7 +810,7 @@ node tests/run.js
 ```
 
 Suite **sans aucune dépendance** (pas de `package.json`, pas de build, node seul) :
-**121 cas · ~104 000 assertions**. Un filtre optionnel en argument ne joue que les
+**149 cas · ~110 000 assertions**. Un filtre optionnel en argument ne joue que les
 fichiers correspondants (`node tests/run.js lab`).
 
 Deux détails du harnais évitent des faux verts :
@@ -804,6 +828,7 @@ Deux détails du harnais évitent des faux verts :
 | `stats.test.js` | les règles de §7 : découpe à minuit, heure d'été/hiver (jour de 23 h / 25 h), bornes 16 h, invariant Σ segments = total, dénominateurs des moyennes, les 7 listes de qualité, + des tests de **propriétés** sur scénarios pseudo-aléatoires (PRNG déterministe, jamais `Math.random`) |
 | `prediction.test.js` | échantillons, backtests walk-forward, **absence de fuite du futur**, états AWAKE/ASLEEP/UNKNOWN, bases de plage |
 | `lab.test.js` | cas du laboratoire, comparaison appariée, cycle de vie des statuts, checkpoints, export LLM, **famille MF** (features de repas, §8.6) |
+| `multichamp.test.js` | cascade M6/M2/M2v2 (déclenchements, repli M0, exclusivité `remaining`/`remainingV2`, appariement M2v2 vs M2, §8.4bis) et, côté labo, les champions par cible dans `_labView` — `active` par construction, jamais pour M2v2 (§8.5) |
 | `export.test.js` | l'extension d'analyse de §9.5 : versions séparées, âge décimal **sans** date de naissance, `reliable_from` en heure locale (été **et** hiver), domaines sans date déclarée, tombstones exclus, registres bornés, sortie sérialisable et journal d'entrée non muté |
 | `guards.test.js` | gardes au niveau des **sources** (ci-dessous) |
 

@@ -218,9 +218,13 @@ module.exports = ({ suite, test, eq, near, deepEq, ok, Stats }) => {
     ok(P.nowRows.every(r => r.reason), 'chaque case vide porte sa raison');
     ok(Stats.LAB_MODELS.every(m => m.targets.every(t => !P.view.perf[m.id][t].n)), 'aucune métrique inventée');
     eq(P.view.status.M0, 'active', 'M0 reste le modèle affiché');
-    eq(Object.values(P.view.status).filter(s => s === 'active').length, 1, 'personne d’autre n’est actif');
+    // M6 (wake) et M2 (remaining) sont champions de PRODUCTION par cible, donc
+    // affichés « actifs » par construction — indépendamment de toute donnée.
+    eq(Object.values(P.view.status).filter(s => s === 'active').length,
+      new Set(Object.values(Stats.LAB_TARGET_CHAMPIONS)).size, 'seuls les champions par cible sont actifs');
     eq(Object.values(P.view.status).filter(s => s === 'collecting').length,
-      Stats.LAB_MODELS.length - 1, 'tous les challengers en collecte');
+      Stats.LAB_MODELS.length - new Set(Object.values(Stats.LAB_TARGET_CHAMPIONS)).size,
+      'tous les autres challengers en collecte');
     eq(P.counts.cases, 3, 'compteur de cas');
     deepEq(P.weekly, [], 'aucune évolution hebdomadaire à montrer');
   });
@@ -233,6 +237,20 @@ module.exports = ({ suite, test, eq, near, deepEq, ok, Stats }) => {
       if (m.id === CH || !m.predict) continue;
       for (const t of m.targets) {
         const p = L.view.paired[m.id][t];
+        if (t === 'remainingV2') {
+          // M2v2 (shadow) n'est jamais comparé à M0, qui ne cible pas
+          // remainingV2 — sa référence est M2, appariée par realMs (§ dédiée
+          // _labPairedM2v2VsM2, forme différente : voir tests/multichamp.test.js).
+          const m2ByReal = new Map(), m2v2ByReal = new Map();
+          for (const c of L.cases) {
+            if (c.target === 'remaining' && c.preds.M2) m2ByReal.set(c.realMs, c.preds.M2);
+            else if (c.target === 'remainingV2' && c.preds.M2v2) m2v2ByReal.set(c.realMs, c.preds.M2v2);
+          }
+          const n = [...m2ByReal.keys()].filter(k => m2v2ByReal.has(k)).length;
+          eq(p.pairedN, n, `${m.id}/${t} : appariement strict (par realMs, vs M2)`);
+          if (p.pairedN) vus++;
+          continue;
+        }
         const rows = L.cases.filter(c => c.target === t && c.preds[m.id] && c.preds[CH]);
         eq(p.pairedN, rows.length, `${m.id}/${t} : appariement strict (les 2 modèles ont prédit)`);
         if (!p.pairedN) continue;
@@ -326,7 +344,9 @@ module.exports = ({ suite, test, eq, near, deepEq, ok, Stats }) => {
         const bt = L.view.byTarget[m.id][t];
         ok(Stats.LAB_STATUS_ORDER.includes(bt.status), `${m.id}/${t} : statut connu`);
         ok(bt.why, `${m.id}/${t} : raison affichable`);
-        if (m.id === CH) { eq(bt.status, 'active', 'seul le champion est actif'); continue; }
+        if (m.id === CH) { eq(bt.status, 'active', 'le champion historique reste actif'); continue; }
+        const champ = Stats.LAB_TARGET_CHAMPIONS[t] || CH;
+        if (m.id === champ) { eq(bt.status, 'active', `${m.id}/${t} : champion de production pour cette cible`); continue; }
         eq(bt.status === 'active', false, `${m.id}/${t} : aucun challenger ne s’active tout seul`);
         eq(bt.status === 'rejected', false, `${m.id}/${t} : aucun rejet automatique`);
         const p = L.view.paired[m.id][t];
@@ -337,7 +357,8 @@ module.exports = ({ suite, test, eq, near, deepEq, ok, Stats }) => {
         else eq(bt.status, 'exploration', `${m.id}/${t} : assez de cas → exploration`);
       }
     }
-    eq(Object.values(L.view.status).filter(s => s === 'active').length, 1, 'un seul modèle actif dans tout le laboratoire');
+    eq(Object.values(L.view.status).filter(s => s === 'active').length,
+      new Set(Object.values(Stats.LAB_TARGET_CHAMPIONS)).size, 'seuls les champions par cible sont actifs');
   });
 
   test('l’évolution hebdomadaire ne mélange pas les semaines', () => {
@@ -353,10 +374,14 @@ module.exports = ({ suite, test, eq, near, deepEq, ok, Stats }) => {
         `S${w.ageWeek}/${w.challengerId}/${w.target} : erreur de M0 cette semaine-là`);
     }
     eq(L.weekly.filter(w => w.challengerId === CH).length, 0, 'le champion n’est pas son propre challenger');
+    // _labWeekly exige une prédiction de CH (M0) sur le même cas : structurellement
+    // vide pour les cibles internes (remainingV2/M2v2, comparée à M2, jamais à M0)
+    // — exclues ici, comme labSuggestions les exclut déjà des bannières.
+    const internal = new Set(Stats.LAB_TARGETS.filter(x => x.internal).map(x => x.key));
     eq(L.weekly.reduce((s, w) => s + w.pairedN, 0),
       Stats.LAB_MODELS.filter(m => m.id !== CH && m.predict).reduce((s, m) => s + m.targets.reduce(
-        (x, t) => x + L.view.paired[m.id][t].pairedN, 0), 0),
-      'toutes les paires tombent dans une semaine et une seule');
+        (x, t) => x + (internal.has(t) ? 0 : L.view.paired[m.id][t].pairedN), 0), 0),
+      'toutes les paires tombent dans une semaine et une seule (hors cibles internes)');
   });
 
   suite('13. Laboratoire — checkpoints reconstructibles');
@@ -500,7 +525,8 @@ module.exports = ({ suite, test, eq, near, deepEq, ok, Stats }) => {
       ok(m.pairedN >= 0, `${m.id} : pairedN`);
       if (m.id === 'M8') ok(m.blocked, 'M8 exporte sa raison de non-instanciation');
     });
-    eq(X.models.filter(m => m.status === 'active').length, 1, 'un seul modèle actif (le champion)');
+    eq(X.models.filter(m => m.status === 'active').length,
+      new Set(Object.values(Stats.LAB_TARGET_CHAMPIONS)).size, 'les champions par cible sont actifs');
     ok(X.pairwiseComparisonsVsChampion.length >= 5, `comparaisons appariées (${X.pairwiseComparisonsVsChampion.length})`);
     X.pairwiseComparisonsVsChampion.forEach(p => {
       const src = L.view.paired[p.challengerId][p.target];

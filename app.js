@@ -1452,6 +1452,7 @@ function predClock(ms, refMs) {
 const plural = (n, s = 's') => n > 1 ? s : '';
 // Écart signé : + = plus tard que prévu (même convention que les résidus de stats.js)
 function predSigned(min) {
+  if (min == null || !isFinite(min)) return '—';
   const r = Math.round(min);
   return `${r > 0 ? '+' : (r < 0 ? '−' : '±')}${Math.abs(r)} min`;
 }
@@ -1592,13 +1593,12 @@ function predCascadeCard(p) {
   const rows = [
     row('Réveil initial', initHint, node(wc.initialWake), wc.effectiveModelId !== 'M2'),
     row('Réestimation validée', 'si ce dodo dure déjà plus longtemps que prévu', node(wc.m2, 'pas encore déclenchée'), wc.effectiveModelId === 'M2'),
-    row('Nouvelle méthode · expérimental', 'jamais affichée comme prédiction — seulement comparée à la ligne du dessus', node(wc.m2v2, 'pas encore déclenchée'), false),
   ].join('');
   return `
     <div class="stat-card stat-card-wide">
       <div class="sc-head"><div class="sc-title">Cascade de réveil</div></div>
       <div class="ctx-list">${rows}</div>
-      <div class="est-n">Une seule de ces lignes est reprise dans l'estimation ci-dessus (celle marquée « affiché plus haut ») ; les autres sont calculées en parallèle et comparées, jamais fusionnées. Détails et noms de modèles dans le laboratoire plus bas.</div>
+      <div class="est-n">Une seule de ces lignes est reprise dans l'estimation ci-dessus (celle marquée « affiché plus haut ») ; l'autre tourne en parallèle, comparée, jamais fusionnée. Une troisième méthode expérimentale tourne aussi en coulisses, uniquement comparée à « Réestimation validée » — jamais affichée ici : détails dans le laboratoire plus bas.</div>
     </div>`;
 }
 
@@ -1744,7 +1744,7 @@ function renderPrediction() {
     <div class="stat-grid">${cards}</div>
     <div class="lab-sep">
       <h2 class="section-label">🧪 Laboratoire Champion / Challengers</h2>
-      <p class="view-sub">Tout est calculé tôt, comparé en walk-forward et montré. Seuls M0 (endormissement), M6 (réveil initial, repli M0) et M2 (réestimation) sont affichés plus haut ; tout le reste — dont M2v2 — tourne en pur challenger/shadow et n'est <b>jamais</b> promu automatiquement.</p>
+      <p class="view-sub">Tout est calculé tôt, comparé en walk-forward et montré. Ici, chaque modèle retrouve son nom : « Endormissement estimé » plus haut, c'est <b>M0</b> ; « Réveil initial », c'est <b>M6</b> (repli M0 si trop peu d'historique par créneau) ; « Réestimation validée », c'est <b>M2</b>. Le reste — dont <b>M2v2</b>, comparé uniquement à M2 ci-dessous — tourne en pur challenger/shadow et n'est <b>jamais</b> promu automatiquement.</p>
     </div>
     <div class="stat-grid" id="labHost"></div>`;
 
@@ -1784,10 +1784,11 @@ const LAB_METRICS = [
   { key: 'p80', label: 'P80' },
   { key: 'bias', label: 'biais signé' },
 ];
-// Champions par cible affichés en direct (§8/§33) — miroir exact des mêmes
-// constantes dans Stats.labExport(). Pure UI : app.js ne choisit rien, il
-// nomme juste ce que stats.js applique déjà dans sleepPrediction().
-const LAB_CHAMPIONS = { onset: 'M0', wake: 'M6', remaining: 'M2' };
+// Champions par cible affichés en direct (§8/§33) — même source que
+// Stats._labView()/labExport() (Stats.LAB_TARGET_CHAMPIONS). Pure UI :
+// app.js ne choisit rien, il nomme juste ce que stats.js applique déjà
+// dans sleepPrediction().
+const LAB_CHAMPIONS = Stats.LAB_TARGET_CHAMPIONS;
 const LAB_CHALLENGERS = { remaining: ['M2v2'] };
 const LAB_CASES_PAGE = 20;                  // cas affichés par palier (le reste est explicitement annoncé)
 let labLast = null;                         // dernier laboratoire calculé (source de tous les re-rendus)
@@ -1864,7 +1865,7 @@ function labNowCard(lab) {
   lab.nowRows.forEach(r => { if (!byT.has(r.target)) byT.set(r.target, []); byT.get(r.target).push(r); });
   const blocks = Stats.LAB_TARGETS.filter(t => byT.has(t.key)).map(t => {
     const rows = byT.get(t.key).map(r => {
-      const isCh = r.modelId === lab.championId;
+      const isCh = r.modelId === (LAB_CHAMPIONS[t.key] || lab.championId);
       const perf = (lab.view.perf[r.modelId] || {})[t.key];
       const n = perf ? perf.n : 0;
       const name = `${r.modelId} — ${labModel(lab, r.modelId).label}`;
@@ -1944,9 +1945,10 @@ function labPerfCard(lab) {
   if (!t) return labCard('Performance comparée', labEmpty('Aucun cas backtesté encore (n=0).'), { id: 'lab-perf' });
 
   const models = lab.models.filter(m => m.predict && m.targets.includes(t));
+  const champForT = LAB_CHAMPIONS[t] || lab.championId;
   const rows = models.map(m => {
     const p = (lab.view.perf[m.id] || {})[t], pr = (lab.view.paired[m.id] || {})[t];
-    const isCh = m.id === lab.championId;
+    const isCh = m.id === champForT;
     const name = `${m.id} — ${m.label}`;
     if (!p || !p.n) {
       return `<tr class="lab-na"><td>${name}</td><td colspan="5">aucun backtest encore (n=0)</td></tr>`;
@@ -1963,7 +1965,7 @@ function labPerfCard(lab) {
   }).join('');
 
   // Résumé par challenger (§3.8.2) — la comparaison appariée est centrale.
-  const summaries = models.filter(m => m.id !== lab.championId).map(m => {
+  const summaries = models.filter(m => m.id !== champForT).map(m => {
     const p = (lab.view.paired[m.id] || {})[t];
     const bt = lab.view.byTarget[m.id][t];
     if (!p || !p.pairedN) {
@@ -2252,6 +2254,10 @@ function labSuggestions(lab) {
     for (const id of cp.focusModels) {
       const m = labModel(lab, id);
       for (const t of (m.targets || [])) {
+        // Déjà champion de production sur cette cible, ou cible interne
+        // (sonde M2v2) : rien à « regarder », ce n'est plus une expérience ouverte.
+        if (id === (Stats.LAB_TARGET_CHAMPIONS[t] || lab.championId)) continue;
+        if ((Stats.LAB_TARGETS.find(x => x.key === t) || {}).internal) continue;
         const p = ((cp.view || lab.view).paired[id] || {})[t];
         if (p && p.pairedN >= Stats.FEATURE_EXPLORATION_MIN_PAIRED_N) ready.push({ id, label: m.label, t, n: p.pairedN });
       }
@@ -2270,6 +2276,10 @@ function labSuggestions(lab) {
   for (const m of lab.models) {
     if (!m.predict || m.id === lab.championId) continue;
     for (const t of m.targets) {
+      // Déjà champion de production sur cette cible (M6/wake, M2/remaining), ou
+      // cible interne (sonde M2v2) : plus une expérience ouverte, rien à suggérer.
+      if (m.id === (Stats.LAB_TARGET_CHAMPIONS[t] || lab.championId)) continue;
+      if ((Stats.LAB_TARGETS.find(x => x.key === t) || {}).internal) continue;
       const p = (lab.view.paired[m.id] || {})[t];
       if (!p || !p.pairedN) continue;
       const st = lab.view.byTarget[m.id][t].status;

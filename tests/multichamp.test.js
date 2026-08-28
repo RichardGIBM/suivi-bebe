@@ -267,4 +267,74 @@ module.exports = ({ suite, test, eq, near, ok, Stats }) => {
     eq(paired.M2v2Losses, 0);
     near(paired.recent10MedianGainMin, 10, 1e-6);
   });
+
+  suite('Cascade M6/M2/M2v2 — champions par cible dans le laboratoire (v38)');
+
+  /* Cas fabriqués pour la vue du labo : `errs` = erreur signée voulue, par
+     modèle (même fabrique que tests/lab.test.js — copie locale, les fichiers
+     de test n'ont pas de fixtures partagées). */
+  const fakeLabCases = (target, n, errs) => Array.from({ length: n }, (_, i) => {
+    const preds = {};
+    for (const id of Object.keys(errs)) {
+      preds[id] = { predMin: id === 'M0' ? 0 : 1, predMs: 0, signedErrMin: errs[id], absErrMin: Math.abs(errs[id]) };
+    }
+    return {
+      id: `${target}-${String(i + 1).padStart(4, '0')}`, target,
+      asOfMs: i, anchorMs: 0, realMs: (i + 1) * 3600000, realMin: 0,
+      ageDays: Math.floor(i / 6), features: {}, preds,
+    };
+  });
+
+  test('M6 devient `active` sur `wake` une fois déclenché, mais reste un challenger ordinaire sur `onset`', () => {
+    // M6 a des cas des DEUX cibles (§21/§33/§34 : M6 est champion de `wake`,
+    // mais un challenger comme un autre sur `onset`, où M0 reste champion) —
+    // le statut ne doit dépendre QUE de la cible, jamais du modèle seul.
+    const cs = fakeLabCases('wake', 40, { M0: 30, M6: 5 }).concat(fakeLabCases('onset', 40, { M0: 30, M6: 5 }));
+    const V = Stats._labView(cs, Infinity);
+    eq(V.byTarget.M6.wake.status, 'active', 'M6/wake : champion de production');
+    ok(/production/.test(V.byTarget.M6.wake.why), 'raison : champion en production');
+    ok(V.byTarget.M6.onset.status !== 'active', 'M6/onset : challenger ordinaire, jamais actif');
+    eq(V.byTarget.M0.wake.status, 'active', 'M0/wake : reste actif (référence historique de comparaison)');
+    ok(!/production/.test(V.byTarget.M0.wake.why), 'M0/wake : la raison ne prétend plus être ce qui est affiché');
+    eq(V.byTarget.M0.onset.status, 'active', 'M0/onset : toujours champion en production ici');
+    eq(V.status.M6, 'active', 'statut du modèle M6 = actif (porté par wake)');
+  });
+
+  test('M2 devient `active` sur `remaining` une fois déclenché', () => {
+    const V = Stats._labView(fakeLabCases('remaining', 40, { M0: 30, M2: 5 }), Infinity);
+    eq(V.byTarget.M2.remaining.status, 'active', 'M2/remaining : champion de production');
+    eq(V.status.M2, 'active', 'statut du modèle M2 = actif');
+  });
+
+  test('M2v2 (`remainingV2`) n’est structurellement jamais champion', () => {
+    eq(Stats.LAB_TARGETS.find(t => t.key === 'remainingV2').internal, true, 'cible marquée interne');
+    ok(!Object.values(Stats.LAB_TARGET_CHAMPIONS).includes('M2v2'), 'M2v2 absent de la table des champions par cible');
+  });
+
+  test('M2v2 vs M2 : mêmes chiffres pour labExpCard (vue) et labChampionsCard (calcul direct), jamais promu, jamais dans les exports génériques', () => {
+    const evs = lateSpreadEvents();
+    const realEnd = add(START_LATE, 400);
+    evs.push(sl(START_LATE, realEnd));
+    const now = add(realEnd, 30);
+    const lab = Stats.sleepLab(evs, { now, domainStart: DOMAIN, birth: BIRTH });
+
+    ok(lab.view.byTarget.M2v2.remainingV2.status !== 'active', 'M2v2/remainingV2 : jamais actif');
+    eq(lab.view.status.M2v2 === 'active', false, 'statut du modèle M2v2 : jamais actif');
+
+    // labExpCard lit lab.view.paired.M2v2.remainingV2 ; labChampionsCard
+    // appelle _labPairedM2v2VsM2 directement — même source, jamais deux
+    // cartes qui se contredisent sur les mêmes chiffres.
+    const direct = Stats._labPairedM2v2VsM2(lab);
+    const viaView = lab.view.paired.M2v2.remainingV2;
+    ok(direct.pairedN > 0, `au moins une paire M2v2/M2 (${direct.pairedN})`);
+    eq(viaView.pairedN, direct.pairedN, 'même n apparié entre les deux cartes');
+    eq(viaView.medianGainMin, direct.medianGainMin, 'même gain médian entre les deux cartes');
+    eq(viaView.M2v2Wins, direct.M2v2Wins, 'mêmes victoires entre les deux cartes');
+    eq(viaView.M2v2Losses, direct.M2v2Losses, 'mêmes défaites entre les deux cartes');
+
+    const X = Stats.labExport(lab);
+    ok(!X.pairwiseComparisonsVsChampion.some(p => p.target === 'remainingV2'), 'absent de pairwiseComparisonsVsChampion (forme M0-only)');
+    ok(!X.experiments.some(e => e.experimentId.includes('remainingV2')), 'absent de experiments (même raison)');
+    ok(X.pairedM2v2VsM2 && X.pairedM2v2VsM2.pairedN === direct.pairedN, 'sa propre sortie dédiée existe et correspond');
+  });
 };
