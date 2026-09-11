@@ -189,7 +189,15 @@ Realtime (postgres_changes) ◄── serveur estampe updated_at (trigger) ◄�
   survit et est rejouée au retour (`online`, visibilité, refresh).
 - **Realtime** : canal `events-sync` sur la table `events` ; les échos de nos propres
   écritures (présentes en file, ou identiques à la version locale) sont ignorés.
-- **Pull** (`_pullAll`) : récupère l'état serveur et le fusionne.
+- **Pull** (`_pullAll`) : récupère l'état serveur par lots de 500, triés par id,
+  avec un curseur jusqu'à une page vide (supporte le plafond de réponses Supabase).
+  La fusion ne commence qu'après réception de toutes les pages et conserve les
+  écritures locales en attente. Une lecture échouée ne devient plus un voyant vert
+  lorsque la file d'envoi est vide ou vient d'être envoyée.
+- **Reconnexion** : rattrapage du journal à chaque abonnement Realtime réussi
+  et au retour du réseau. Les erreurs du canal sont signalées par la pastille.
+- **Tests de synchro** : `node --test tests/sync.cjs` (réseau et stockage simulés,
+  couche Store réelle ; pagination, échec partiel, file locale, reconnexion).
 - **Migration unique** (`_migrateOnce`) : à la 1re connexion, enfile tout l'existant
   local vers le serveur (une seule fois, gardée par `suivi-bebe-migrated`).
 

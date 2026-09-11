@@ -40,6 +40,7 @@ const Store = {
   _sb: null,         // client Supabase
   _authed: false,    // session active ?
   _channel: null,    // canal Realtime
+  _lastPullOk: false,
   _syncState: 'local',
 
   /* ----- Cache local ----- */
@@ -149,8 +150,10 @@ const Store = {
   // Rafraîchissement manuel (tirer pour rafraîchir) / au retour au premier plan :
   // re-fusionne l'état serveur puis vide la file. No-op si non connecté.
   async refresh() {
-    if (this._authed && this._sb) { await this._pullAll(); this._flush(); }
-    return true;
+    if (!this._authed || !this._sb) return false;
+    const pulled = await this._pullAll();
+    await this._flush();
+    return pulled;
   },
 
   _subs: [],
@@ -210,13 +213,28 @@ const Store = {
   },
 
   async _pullAll() {
-    if (!this._sb || !this._authed) return;
+    if (!this._sb || !this._authed) return false;
     this._load();
     this._loadQueue();
-    let data, error;
-    try { ({ data, error } = await this._sb.from('events').select('*')); }
-    catch (e) { this._setSync('offline'); return; }
-    if (error || !Array.isArray(data)) { this._setSync('offline'); return; }
+    const data = [];
+    try {
+      // Supabase plafonne chaque réponse. Parcourir les ids jusqu'à une page
+      // vide, même si le serveur impose une limite inférieure à notre lot.
+      let cursor = null;
+      while (true) {
+        let query = this._sb.from('events').select('*').order('id', { ascending: true }).limit(500);
+        if (cursor !== null) query = query.gt('id', cursor);
+        const { data: page, error } = await query;
+        if (error || !Array.isArray(page)) throw error || new Error('Réponse de synchro invalide');
+        if (!page.length) break;
+        data.push(...page);
+        cursor = page[page.length - 1].id;
+      }
+    } catch (e) {
+      this._lastPullOk = false;
+      this._setSync('offline');
+      return false;
+    }
     let changed = false;
     for (const row of data) {
       if (this._queue.has(row.id)) continue;           // écriture locale en attente = prioritaire
@@ -226,7 +244,9 @@ const Store = {
       else { Object.assign(local, incoming); changed = true; } // serveur autoritaire
     }
     if (changed) this._save();
+    this._lastPullOk = true;
     this._setSync(this._queue.size ? 'pending' : 'ok');
+    return true;
   },
 
   _subscribeRealtime() {
@@ -235,7 +255,14 @@ const Store = {
       .channel('events-sync')
       .on('postgres_changes', { event: '*', schema: 'public', table: 'events' },
         (payload) => this._applyRealtime(payload.new || payload.old))
-      .subscribe();
+      .subscribe((status) => {
+        // Rattrape aussi les changements manqués pendant une reconnexion.
+        if (status === 'SUBSCRIBED') this.refresh();
+        else if (['CHANNEL_ERROR', 'TIMED_OUT', 'CLOSED'].includes(status)) {
+          this._lastPullOk = false;
+          this._setSync('offline');
+        }
+      });
   },
 
   _applyRealtime(row) {
@@ -259,7 +286,7 @@ const Store = {
   async _flush() {
     if (this._flushing || !this._authed || !this._sb) return;
     this._loadQueue();
-    if (this._queue.size === 0) { this._setSync('ok'); return; }
+    if (this._queue.size === 0) { this._setSync(this._lastPullOk ? 'ok' : 'offline'); return; }
     this._flushing = true;
     this._setSync('pending');
     try {
@@ -275,7 +302,7 @@ const Store = {
         }
       }
       this._saveQueue();
-      this._setSync(this._queue.size ? 'pending' : 'ok');
+      this._setSync(this._queue.size ? 'pending' : (this._lastPullOk ? 'ok' : 'offline'));
     } catch (e) {
       this._setSync('offline');                        // on garde la file : retry au prochain flush / retour online
     } finally {
@@ -2884,7 +2911,7 @@ window.addEventListener('storage', (e) => {
   }
 });
 // Retour de connexion : on tente de vider la file d'envoi
-window.addEventListener('online', () => { if (Store._authed) Store._flush(); });
+window.addEventListener('online', () => { if (Store._authed) Store.refresh(); });
 
 // Retour au premier plan (rouverture via raccourci, changement d'onglet…) :
 // la connexion temps réel a pu se couper en arrière-plan → on re-fusionne.
