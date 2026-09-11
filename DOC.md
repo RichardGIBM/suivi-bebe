@@ -189,11 +189,20 @@ Realtime (postgres_changes) ◄── serveur estampe updated_at (trigger) ◄�
   survit et est rejouée au retour (`online`, visibilité, refresh).
 - **Realtime** : canal `events-sync` sur la table `events` ; les échos de nos propres
   écritures (présentes en file, ou identiques à la version locale) sont ignorés.
-- **Pull** (`_pullAll`) : récupère l'état serveur par lots de 500, triés par id,
-  avec un curseur jusqu'à une page vide (supporte le plafond de réponses Supabase).
-  La fusion ne commence qu'après réception de toutes les pages et conserve les
-  écritures locales en attente. Une lecture échouée ne devient plus un voyant vert
-  lorsque la file d'envoi est vide ou vient d'être envoyée.
+- **Pull** (`_pullAll`, nom historique) : premier chargement complet, puis filtre
+  `updated_at >= repère - 2 minutes`, sans limite d'âge des événements (`ts`).
+  Le repère persistant `suivi-bebe-sync-cursor-v1` est le dernier `updated_at`
+  serveur observé AVANT le parcours ; l'horloge du téléphone n'intervient pas.
+  Le recouvrement tolère les écritures rapprochées et les transactions courtes
+  encore en cours. Il ne constitue pas un journal transactionnel : une transaction
+  retardée de plus de deux minutes peut nécessiter une restauration complète.
+  Lecture par lots de 500 triés par id, jusqu'à une page vide, avec conservation
+  des écritures locales en attente et des tombstones. Le repère ne progresse
+  qu'après toutes les pages et la persistance du cache. Sans cache valide, une
+  restauration complète est effectuée même si un ancien repère existe.
+  Les pulls concurrents partagent une promesse ; Realtime ne fait pas avancer
+  le repère car un message ne garantit pas la réception de tous les précédents.
+  Une lecture ou persistance échouée ne devient pas un voyant vert après envoi.
 - **Reconnexion** : rattrapage du journal à chaque abonnement Realtime réussi
   et au retour du réseau. Les erreurs du canal sont signalées par la pastille.
 - **Tests de synchro** : `node --test tests/sync.cjs` (réseau et stockage simulés,

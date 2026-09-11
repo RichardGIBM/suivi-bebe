@@ -33,6 +33,8 @@ const Store = {
   KEY: 'suivi-bebe-events',
   QKEY: 'suivi-bebe-queue',
   MIGKEY: 'suivi-bebe-migrated',
+  SYNC_KEY: 'suivi-bebe-sync-cursor-v1',
+  _pullPromise: null,
   _cache: null,      // tableau de TOUTES les lignes (y compris deleted)
   _byId: null,       // Map id -> ligne (mêmes références que _cache)
   _queue: null,      // Map id -> snapshot en attente d'envoi
@@ -63,9 +65,10 @@ const Store = {
     } catch (e) {
       // Stockage plein, bloqué, ou navigation privée : on prévient au lieu de planter
       if (typeof toast === 'function') toast('⚠️ Impossible d’enregistrer (stockage indisponible)');
-      return;
+      return false;
     }
     this._notify();
+    return true;
   },
 
   /* ----- File d'envoi (persistée pour survivre au hors-ligne) ----- */
@@ -212,17 +215,43 @@ const Store = {
     localStorage.setItem(this.MIGKEY, '1');
   },
 
-  async _pullAll() {
+  _pullAll() {
+    // Les retours réseau, visibilité et Realtime peuvent se chevaucher.
+    if (!this._pullPromise) {
+      this._pullPromise = this._pullChanges().finally(() => { this._pullPromise = null; });
+    }
+    return this._pullPromise;
+  },
+
+  async _pullChanges() {
     if (!this._sb || !this._authed) return false;
     this._load();
     this._loadQueue();
     const data = [];
+    let since = null, checkpoint = null;
     try {
+      const saved = localStorage.getItem(this.SYNC_KEY);
+      const cache = JSON.parse(localStorage.getItem(this.KEY));
+      // Sans cache durable, toujours restaurer l'historique complet.
+      if (Array.isArray(cache) && saved && Number.isFinite(Date.parse(saved))) {
+        since = new Date(Date.parse(saved) - 120000).toISOString();
+      }
+    } catch { /* stockage absent ou illisible : lecture complète */ }
+    try {
+      // Repère du SERVEUR pris avant le parcours : aucune dépendance à
+      // l'horloge du téléphone ; les écritures arrivant pendant seront relues.
+      const head = await this._sb.from('events').select('updated_at')
+        .order('updated_at', { ascending: false }).limit(1);
+      if (head.error || !Array.isArray(head.data)) throw head.error || new Error('Réponse invalide');
+      checkpoint = head.data[0] && head.data[0].updated_at;
+      if (checkpoint && !Number.isFinite(Date.parse(checkpoint))) throw new Error('Repère invalide');
       // Supabase plafonne chaque réponse. Parcourir les ids jusqu'à une page
       // vide, même si le serveur impose une limite inférieure à notre lot.
       let cursor = null;
       while (true) {
-        let query = this._sb.from('events').select('*').order('id', { ascending: true }).limit(500);
+        let query = this._sb.from('events').select('*')
+          .order('id', { ascending: true }).limit(500);
+        if (since) query = query.gte('updated_at', since);
         if (cursor !== null) query = query.gt('id', cursor);
         const { data: page, error } = await query;
         if (error || !Array.isArray(page)) throw error || new Error('Réponse de synchro invalide');
@@ -235,15 +264,23 @@ const Store = {
       this._setSync('offline');
       return false;
     }
-    let changed = false;
     for (const row of data) {
       if (this._queue.has(row.id)) continue;           // écriture locale en attente = prioritaire
       const incoming = { id: row.id, action: row.action, data: row.data || {}, ts: row.ts, deleted: !!row.deleted };
       const local = this._byId.get(row.id);
-      if (!local) { this._cache.push(incoming); this._byId.set(row.id, incoming); changed = true; }
-      else { Object.assign(local, incoming); changed = true; } // serveur autoritaire
+      if (!local) { this._cache.push(incoming); this._byId.set(row.id, incoming); }
+      else { Object.assign(local, incoming); } // serveur autoritaire
     }
-    if (changed) this._save();
+    // Cache d'abord, repère ensuite : une panne de stockage ne doit jamais
+    // faire sauter des changements au redémarrage. Persister même sans diff.
+    if (!this._save()) {
+      this._lastPullOk = false;
+      this._setSync('offline');
+      return false;
+    }
+    try {
+      if (checkpoint) localStorage.setItem(this.SYNC_KEY, checkpoint);
+    } catch { /* on relira depuis l'ancien repère : sans perte */ }
     this._lastPullOk = true;
     this._setSync(this._queue.size ? 'pending' : 'ok');
     return true;
