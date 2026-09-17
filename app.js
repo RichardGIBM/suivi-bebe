@@ -419,7 +419,7 @@ const BIRTH = new Date(2026, 7, 6, 5, 25);
      sein    = orange  #eb6834   \  paire catégorielle CVD-safe (ΔE ~25)
      biberon = bleu    #2a78d6   /  → carte « Sein vs Biberon » + « Part du biberon »
      vert    = #6f9e57  (sommeil / couches : séries uniques, contraste OK) */
-const CHART = { sein: '#eb6834', biberon: '#2a78d6', vert: '#6f9e57', grid: '#e7e8ec', ink: '#8a8a93' };
+const CHART = { sein: '#eb6834', biberon: '#2a78d6', vert: '#6f9e57', grid: 'var(--line)', ink: 'var(--text-soft)' };
 
 /* Résumé lisible d'un événement */
 function describe(ev) {

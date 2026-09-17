@@ -901,3 +901,11 @@ Avant tout commit :
 ```bash
 node tests/run.js
 ```
+
+### Thème horaire (v41)
+
+`theme.js`, chargé dans le head avant le rendu, applique le thème sombre de
+22 h incluses à 6 h exclues, selon l’heure locale du téléphone. Réévaluation
+à chaque minute, au retour de visibilité et sur `pageshow`. Le thème couvre
+les surfaces, formulaires et axes des graphiques ; `theme-color` suit le fond.
+Le script est mis en cache par le service worker pour fonctionner hors ligne.

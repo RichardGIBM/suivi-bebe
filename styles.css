@@ -1002,3 +1002,47 @@ body :is(input, textarea) { -webkit-user-select: text; user-select: text; }
 
 .lab-sum { margin-top: 10px; box-shadow: none; border: 1px solid var(--line); }
 .lab-sum summary { font-size: 12.5px; padding: 9px 0; }
+
+/* ---------- Nuit automatique : 22 h incluses → 6 h exclues ---------- */
+:root { color-scheme: light; }
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #14151a;
+  --surface: #202228;
+  --surface-2: #2a2d35;
+  --text: #ececf1;
+  --text-soft: #b0b1bf;
+  --line: #3a3d48;
+  --shadow: 0 4px 16px rgba(0, 0, 0, .25);
+  --tl-night: rgba(128, 180, 215, .12);
+  --tl-grid: #343741;
+  --tl-now: #9ec9e8;
+}
+[data-theme="dark"] body.other-day { background: #1c1b24; }
+[data-theme="dark"] .tile::before { opacity: .18; }
+[data-theme="dark"] .tile .name,
+[data-theme="dark"] .tile.tile-active .since { color: var(--text); }
+[data-theme="dark"] .tile .since { color: var(--text-soft); }
+[data-theme="dark"] .tile-badge { background: rgba(0, 0, 0, .32); color: var(--text); }
+[data-theme="dark"] .age-chip { color: #e7a9ce; }
+[data-theme="dark"] .age-chip-birth { color: var(--text-soft); }
+[data-theme="dark"] .toast { background: var(--surface-2); color: var(--text); }
+[data-theme="dark"] .lock-screen { background: linear-gradient(150deg, #302330, #1c2a36); }
+[data-theme="dark"] .btn-primary { background: color-mix(in srgb, var(--accent, #e08a63) 45%, #202228); color: var(--text); }
+[data-theme="dark"] .btn-danger { background: #46282e; color: #ffb2ae; }
+[data-theme="dark"] .lock-error { color: #ffb2ae; }
+[data-theme="dark"] .learned-input button { background: #453e28; color: #ecd789; }
+[data-theme="dark"] .quality-box,
+[data-theme="dark"] .pred-banner { background: #30271f; border-color: #66503b; }
+[data-theme="dark"] .q-row { border-color: #66503b; }
+[data-theme="dark"] .quality-box summary,
+[data-theme="dark"] .quality-box summary::after,
+[data-theme="dark"] .pred-banner .pb-txt,
+[data-theme="dark"] .sd-note,
+[data-theme="dark"] .pred-table td.err-mid { color: #eab88f; }
+[data-theme="dark"] .pred-table td.err-ok { color: #b5d59f; }
+[data-theme="dark"] .lab-link { color: #a9ceeb; }
+[data-theme="dark"] .lab-active { background: #283827; color: #b5d59f; }
+[data-theme="dark"] .lab-confirming { background: #243647; color: #a9ceeb; }
+[data-theme="dark"] .lab-exploration { background: #403324; color: #eab88f; }
+[data-theme="dark"] .lab-rejected { background: #46282e; color: #ffb2ae; }
