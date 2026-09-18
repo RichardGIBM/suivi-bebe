@@ -1,5 +1,12 @@
 # Suivi Bébé — Documentation technique (rétro-doc)
 
+> **Prédictions v43** : l'écran actif utilise désormais `prediction.js` et
+> `SleepModels`, avec M6 pour l'endormissement, M3 pour le réveil et H1 comme
+> unique concurrent. Les descriptions de l'ancien laboratoire ci-dessous sont
+> conservées pour audit ; `renderPredictionLegacy` et les anciennes expériences
+> ne sont plus appelés par l'écran actif.
+
+
 Application web mobile (PWA) de **suivi quotidien d'un nourrisson** : tétées, biberons,
 couches, sommeil, soins, température, médicaments, et journal « ce que bébé a appris ».
 Pensée pour être partagée entre **deux téléphones** (les deux parents) avec synchro
@@ -917,3 +924,35 @@ avant le chargement de la page). `theme.js` applique immédiatement `color-schem
 et une couleur système noire la nuit, blanche le jour. Les barres natives
 restent dépendantes du navigateur et de la version Android ; le manifeste
 d'une installation existante peut se mettre à jour avec un délai.
+
+### Comparaison simplifiée (v43)
+
+- Références : médiane M6 jour/nuit pour l'endormissement ; médiane M3 par tranche
+  de six heures pour le réveil. Fenêtre 14 jours / 40 observations, cinq exemples
+  minimum ; repli vers la médiane générale si le groupe est insuffisant.
+- Réestimation : les deux références sont étendues par conditionnement aux durées
+  strictement supérieures au temps écoulé. Cette extension remplace M2/M2v2 dans
+  l'écran actif ; ce n'est pas une nouvelle promotion fondée sur leurs anciens scores.
+- H1 v1 : 28 jours / 160 observations ; poids de récence demi-vie 7 jours ; noyau
+  gaussien de distance horaire circulaire (largeur 3 h), mélangé à une référence
+  jour/nuit avec poids intergroupe 0,15 et régularisation 8 exemples effectifs.
+  Trois survivants et effectif pondéré 2,5 minimum, sinon abstention.
+- P25/P75 historiques affichés seulement avec huit survivants et effectif 5 ;
+  ce ne sont pas des intervalles de confiance calibrés. Leur couverture est exportée.
+- Évaluation : sondes communes à 0, 30, 60 et 120 minutes depuis la même ancre
+  réelle, uniquement si l'état persiste. 40 derniers cas éligibles par sonde,
+  métriques appariées + disponibilités des deux méthodes. Les sondes ne doivent
+  pas être additionnées comme observations indépendantes. Aucun entraînement sur
+  une durée dont la fin est inconnue à l'instant prédit. Reconstitution depuis
+  le journal courant, pas un historique des prévisions réellement servies.
+- H1 est exploratoire : paramètres fixés avant le premier résultat comparatif,
+  pas de recherche d'hyperparamètres sur l'export. Sur l'export du 18 septembre,
+  aux 40 derniers départs : endormissement 26 min contre 27 pour M6 ; réveil
+  46 min contre 42,5 pour M3 (erreurs médianes). Aucune supériorité globale démontrée.
+- Le tic de 60 secondes ne recalcule que les deux prédictions courantes. Le
+  backtest est recalculé à l'ouverture, au changement de données et au bouton
+  Recalculer. Pas de réveil chaîné spéculatif avant endormissement.
+- Export actif : `sleep-comparison/1.0`, paramètres, sondes et métriques ; aucune
+  ancienne expérience dans cet export. L'ancien laboratoire reste dans les
+  fonctions d'audit, sans être exécuté par cette interface.
+- Validation : `node --test tests/sleep-models.cjs` et `node tests/run.js`.

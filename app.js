@@ -1554,6 +1554,7 @@ function predRelHTML(p) {
 }
 let predLast = null;                        // dernière prédiction rendue (pour le tic de 60 s)
 function refreshPredictionRel() {
+  if (document.getElementById('simplePredictionNow')) { renderSimplePredictionNow(); return; }
   const el = document.getElementById('predRel');
   if (el && predLast) el.innerHTML = predRelHTML(predLast);
 }
@@ -1720,7 +1721,63 @@ function predTableCard(title, label, q) {
     </div>`;
 }
 
+// Interface active : deux références spécialisées, un concurrent H1.
+let sleepComparison = null;
+function renderSimplePredictionNow() {
+  const host = document.getElementById('simplePredictionNow');
+  if (!host) return;
+  const p = SleepModels.current(Store.all(), { domainStart: DATA_START });
+  const label = p.target === 'onset' ? 'Endormissement' : 'Réveil';
+  const card = (prediction, title, shadow) => `<div class="stat-card stat-card-wide">
+    <div class="sc-head"><div class="sc-title">${title}</div></div>
+    ${prediction ? `<div class="est-hero">${predClock(prediction.atMs, p.nowMs)}</div>
+      <div class="est-range">${prediction.loMs == null ? 'Pas assez de précédents pour proposer une plage.' : `Plage historique : ${predClock(prediction.loMs, p.nowMs)} – ${predClock(prediction.hiMs, p.nowMs)}. Ce n’est pas un intervalle de confiance calibré.`}</div>
+      <div class="est-n">${prediction.n} précédents compatibles${prediction.fallback ? ' · repli sur l’historique général' : ''}${prediction.elapsedMin > 0 ? ' · estimation actualisée avec le temps déjà écoulé' : ''}.</div>` : '<div class="est-empty">Pas assez de précédents comparables pour une estimation fiable.</div>'}
+    ${shadow ? '<div class="est-n">Concurrent expérimental : ne remplace pas la référence automatiquement.</div>' : ''}
+  </div>`;
+  host.innerHTML = `<p class="view-sub">${p.state === 'UNKNOWN' ? 'État inconnu' : p.state === 'ASLEEP' ? 'Bébé dort' : 'Bébé est éveillé'} · actualisé à ${hhmm(p.nowMs)}</p>`
+    + card(p.active, `${label} · référence ${p.reference}`, false)
+    + card(p.challenger, `${label} · concurrent H1`, true);
+}
 function renderPrediction() {
+  document.body.classList.remove('other-day');
+  const host = document.getElementById('view-prediction');
+  if (!host) return;
+  sleepComparison = SleepModels.evaluate(Store.all(), { domainStart: DATA_START });
+  const value = n => n == null ? '—' : `${Math.round(n)} min`;
+  const rows = sleepComparison.summaries.map(s => `<tr>
+    <td>${s.target === 'onset' ? 'Endormissement · M6' : 'Réveil · M3'}<br><small>${s.elapsed ? `Après ${s.elapsed} min` : 'Au départ'}</small></td>
+    <td>${value(s.active.median)}<br><small>P80 ${value(s.active.p80)}</small></td>
+    <td>${value(s.challenger.median)}<br><small>P80 ${value(s.challenger.p80)}</small></td>
+    <td>${s.pairedN}/${s.recentN}<br><small>Réf. ${s.activeN} · H1 ${s.challengerN}</small></td>
+  </tr>`).join('');
+  host.innerHTML = `<div class="view-header"><h1>Prédictions</h1>
+    <p class="view-sub">Deux références, un concurrent. Comparés aux mêmes instants.</p></div>
+    <div class="stat-grid" id="simplePredictionNow"></div>
+    <div class="stat-grid">
+      <div class="stat-card stat-card-wide"><div class="sc-head"><div class="sc-title">Les modèles retenus</div></div>
+        <p class="est-range"><b>M6 · Endormissement</b> : distingue le jour de la nuit.<br>
+        <b>M3 · Réveil</b> : distingue nuit, matin, après-midi et soir.<br>
+        <b>H1 · Concurrent</b> : combine proximité horaire progressive et récence, avec un repli progressif vers le rythme jour/nuit.</p>
+        <p class="est-n">En cours d’éveil ou de sommeil, les deux méthodes utilisent les précédents ayant dépassé la durée déjà écoulée. Trop peu de précédents : aucune heure inventée. Le réveil est estimé une fois l’endormissement enregistré.</p>
+      </div>
+      <div class="stat-card stat-card-wide"><div class="sc-head"><div class="sc-title">Comparaison sur l’historique</div></div>
+        <div class="lab-scroll"><table class="pred-table lab-table"><thead><tr><th>Prévision</th><th>Référence</th><th>H1</th><th>Cas appariés</th></tr></thead><tbody>${rows}</tbody></table></div>
+        <p class="est-n">Erreur médiane, puis seuil contenant 80 % des erreurs (P80) : plus bas est meilleur. Jusqu’aux 40 derniers cas par ligne ; erreurs comparées uniquement quand les deux méthodes prédisent. Les comptes Réf./H1 montrent leurs disponibilités. Les sondes d’un même épisode ne sont pas des observations indépendantes.</p>
+        <p class="est-n">H1 est exploratoire : conçu après examen de l’historique, il devra confirmer ses résultats sur de nouvelles données. Aucune promotion automatique.</p>
+        <button type="button" class="lab-link" id="simplePredictionRefresh">↻ Recalculer</button>
+      </div>
+      <div class="stat-card stat-card-wide"><button type="button" class="eb-btn" id="simplePredictionExport">Exporter la comparaison (.json)</button></div>
+    </div>`;
+  renderSimplePredictionNow();
+  document.getElementById('simplePredictionRefresh').onclick = renderPrediction;
+  document.getElementById('simplePredictionExport').onclick = () => {
+    const result = SleepModels.evaluate(Store.all(), { domainStart: DATA_START });
+    downloadText(`sleep-comparison_${localYMD(new Date())}.json`, JSON.stringify(result, null, 2), 'application/json');
+  };
+}
+
+function renderPredictionLegacy() {
   document.body.classList.remove('other-day');
   const host = document.getElementById('view-prediction');
   if (!host) return;
