@@ -909,3 +909,11 @@ node tests/run.js
 à chaque minute, au retour de visibilité et sur `pageshow`. Le thème couvre
 les surfaces, formulaires et axes des graphiques ; `theme-color` suit le fond.
 Le script est mis en cache par le service worker pour fonctionner hors ligne.
+
+### Couleurs de lancement Android (v42)
+
+Le manifeste annonce un thème et un fond de lancement noirs (y compris de jour,
+avant le chargement de la page). `theme.js` applique immédiatement `color-scheme`
+et une couleur système noire la nuit, blanche le jour. Les barres natives
+restent dépendantes du navigateur et de la version Android ; le manifeste
+d'une installation existante peut se mettre à jour avec un délai.

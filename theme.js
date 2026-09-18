@@ -7,7 +7,10 @@
     const hour = now.getHours();
     const dark = hour >= 22 || hour < 6;
     document.documentElement.dataset.theme = dark ? 'dark' : 'light';
-    document.querySelector('meta[name="theme-color"]').content = dark ? '#14151a' : '#ffffff';
+    // Transmettre aussi le schéma aux contrôles et surfaces du navigateur,
+    // avant le chargement du CSS (notamment au lancement depuis Android).
+    document.documentElement.style.colorScheme = dark ? 'dark' : 'light';
+    document.querySelector('meta[name="theme-color"]').content = dark ? '#000000' : '#ffffff';
     // Réévaluer à la prochaine minute et à chaque retour de veille.
     timer = setTimeout(updateTheme, 60000 - now.getSeconds() * 1000 - now.getMilliseconds());
   }
