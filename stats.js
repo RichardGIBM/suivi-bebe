@@ -2162,7 +2162,7 @@ const Stats = {
     { key: 'diaper',    start: 'couche',  actions: ['couche'] },
     { key: 'sleep',     start: 'sommeil', actions: ['sommeil'] },
     { key: 'health',    start: null,      actions: ['temperature', 'medicament'] },
-    { key: 'routine',   start: null,      actions: ['bain', 'vitamined', 'ventre', 'yeux', 'nez', 'cordon'] },
+    { key: 'routine',   start: null,      actions: ['bain', 'vitamined', 'ventre', 'yeux', 'nez', 'cordon', 'creme_matin', 'creme_soir'] },
     { key: 'milestone', start: null,      actions: ['appris'] },
   ],
 

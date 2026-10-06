@@ -356,10 +356,11 @@ const Store = {
 
 /* ---------- Configuration des actions ----------
    place: 'tile' → gros bouton (ouvre un sheet)
+   place: 'history' → uniquement dans le journal et les exports
    place: 'checklist' → case à cocher quotidienne (un tap = fait)   */
 const ACTIONS = [
   // Tuiles
-  { id: 'tetee',       name: 'Tétée',            emoji: '🤱', color: 'var(--c-tetee)',       place: 'tile', showSince: true },
+  { id: 'tetee',       name: 'Tétée',            emoji: '🤱', color: 'var(--c-tetee)',       place: 'history' },
   { id: 'biberon',     name: 'Biberon',          emoji: '🍼', color: 'var(--c-biberon)',     place: 'tile', showSince: true },
   { id: 'couche',      name: 'Couche',           emoji: '🧷', color: 'var(--c-couche)',      place: 'tile', showSince: true },
   { id: 'sommeil',     name: 'Sommeil',          emoji: '😴', color: 'var(--c-sommeil)',     place: 'tile', showSince: true },
@@ -369,6 +370,8 @@ const ACTIONS = [
   // Checklist quotidienne
   { id: 'vitamined',   name: 'Vitamine D',       emoji: '💧', color: 'var(--c-vitamined)',   place: 'checklist', short: 'Vit. D' },
   { id: 'ventre',      name: 'Temps sur le ventre', emoji: '🤸', color: 'var(--c-ventre)',   place: 'checklist', short: 'Ventre' },
+  { id: 'creme_matin', name: 'Crème matin', emoji: '🧴', color: 'var(--c-soins)', place: 'checklist' },
+  { id: 'creme_soir', name: 'Crème soir', emoji: '🧴', color: 'var(--c-soins)', place: 'checklist' },
   { id: 'yeux',        name: 'Yeux',             emoji: '👁️', color: 'var(--c-soins)',       place: 'checklist' },
   { id: 'nez',         name: 'Nez',              emoji: '👃', color: 'var(--c-soins)',       place: 'checklist' },
 ];
@@ -625,6 +628,7 @@ function renderChecklist() {
     const done = todays.length > 0;
     const item = document.createElement('button');
     item.className = 'check-item' + (done ? ' done' : '');
+    item.setAttribute('aria-pressed', String(done));
     item.style.setProperty('--accent', a.color);
     item.innerHTML = `
       <span class="ci-emoji">${a.emoji}</span>
@@ -1308,7 +1312,7 @@ function renderStats() {
   const hasAny = Store.all().some(e => e.action !== 'appris');
   if (!hasAny) {
     host.innerHTML = `<header class="view-header"><h1>📊 Statistiques</h1></header>
-      <p class="appris-empty">Pas encore de données à analyser.<br>Enregistre des tétées, biberons, couches… depuis l'onglet Suivi.</p>`;
+      <p class="appris-empty">Pas encore de données à analyser.<br>Enregistre des biberons, couches… depuis l'onglet Suivi.</p>`;
     return;
   }
 
@@ -1328,11 +1332,8 @@ function renderStats() {
   const durLong = x => x == null ? '—' : (x >= 1440 ? `${Math.floor(x / 1440)} j ${Math.floor((x % 1440) / 60)} h` : fmtDuration(Math.round(x)));
 
   // Séries par jour — `null` avant la fiabilité du domaine (jamais un faux zéro)
-  const seinA = days.map(d => d.dataRepas ? d.tetees : null);
   const bibA = days.map(d => d.dataRepas ? d.biberons : null);
-  const shareA = days.map(d => (d.dataRepas && d.repas > 0) ? Math.round(d.bottleShare * 100) : null);
   const volA = days.map(d => d.dataRepas ? d.volumeMl : null);
-  const teteeDurA = days.map(d => d.dataRepas ? d.teteeDurMin : null);
   const sleepA = days.map(d => d.dataSommeil ? d.sleepMin : null);
   const longA = days.map(d => d.dataSommeil ? d.longestSleepMin : null);
   const pipiA = days.map(d => d.dataCouche ? d.pipis : null);
@@ -1347,19 +1348,17 @@ function renderStats() {
     `<button class="per-btn${statsPeriod === p ? ' active' : ''}" data-p="${p}">${p} j</button>`).join('');
 
   // Bandeau "Aujourd'hui" (jour partiel — valeurs brutes à cette heure, sans moyenne trompeuse)
-  const todayShare = today.repas > 0 ? Math.round(today.bottleShare * 100) + ' %' : '—';
   const banner = `
     <div class="today-banner">
       <div class="tb-title">Aujourd'hui <span>· à cette heure</span></div>
       <div class="tb-chips">
-        <div class="tb-chip"><span class="tb-v">${f0(today.repas)}</span><span class="tb-l">repas</span></div>
-        <div class="tb-chip"><span class="tb-v">${todayShare}</span><span class="tb-l">biberon</span></div>
+        <div class="tb-chip"><span class="tb-v">${f0(today.biberons)}</span><span class="tb-l">biberons</span></div>
+        <div class="tb-chip"><span class="tb-v">${f0(today.volumeMl)} ml</span><span class="tb-l">volume bu</span></div>
         <div class="tb-chip"><span class="tb-v">${dur(today.sleepMin)}</span><span class="tb-l">sommeil</span></div>
         <div class="tb-chip"><span class="tb-v">${f0(today.pipis)}/${f0(today.cacas)}</span><span class="tb-l">💧/💩</span></div>
       </div>
     </div>`;
 
-  const legendFeeds = `<div class="sc-legend"><span class="lg"><i style="background:${CHART.sein}"></i>Sein</span><span class="lg"><i style="background:${CHART.biberon}"></i>Biberon</span></div>`;
   const card = (o) => `
     <div class="stat-card${o.wide ? ' stat-card-wide' : ''}">
       <div class="sc-head"><div class="sc-title">${o.title}</div>${o.legend || ''}</div>
@@ -1368,24 +1367,13 @@ function renderStats() {
     </div>`;
 
   const cards = [
-    card({ // 1 ★ Sein vs Biberon
-      wide: true, title: 'Sein vs Biberon', legend: legendFeeds,
-      hero: `${f1(av.repas)}`, sub: 'repas / j',
-      chart: statChartStacked(seinA, bibA, { atten: attFeeds, labels, W: 300, H: 92 }),
-    }),
-    card({ // 2 ★ Part du biberon
-      wide: true, title: 'Part du biberon', hero: pct(pe.bottleShare == null ? null : pe.bottleShare * 100),
-      sub: 'du lait donné au biberon',
-      // Cadence des étiquettes : 7 j → chaque jour, 14 j → 1/2, 30 j → 1/5.
-      chart: statChartLine(shareA, { color: CHART.biberon, labels, W: 300, H: 80, every: statsPeriod <= 7 ? 1 : (statsPeriod <= 14 ? 2 : 5) }),
+    card({
+      title: 'Biberons', hero: f1(av.biberons), sub: '/ j en moyenne',
+      chart: statChartBars(bibA, { color: CHART.biberon, atten: attFeeds, labels, W: 150, H: 74, valfmt: v => String(v) }),
     }),
     card({ // 3 Volume bu (biberon, bleu)
       title: 'Volume bu', hero: `${f0(av.volumeMl)}`, sub: 'ml / j (biberon)',
       chart: statChartBars(volA, { color: CHART.biberon, atten: attFeeds, labels, W: 150, H: 74, valfmt: v => String(v) }),
-    }),
-    card({ // 4 Temps au sein (tétées, orange) — en face du volume biberon
-      title: 'Temps au sein', hero: dur(av.teteeDurMin), sub: '/ j (tétées)',
-      chart: statChartBars(teteeDurA, { color: CHART.sein, atten: attFeeds, labels, W: 150, H: 74, dur: true }),
     }),
     card({ // 5 Sommeil total — échelle tronquée 8 h → 20 h (bande jamais dépassée)
       title: 'Sommeil', hero: dur(av.sleepMin), sub: '/ j',
@@ -1414,8 +1402,6 @@ function renderStats() {
       <summary>Détails</summary>
       ${detailRow('Intervalle moyen entre repas', dur(pe.avgFeedGapMin))}
       ${detailRow('Plus long intervalle entre 2 repas', dur(pe.longestFeedGapMin))}
-      ${detailRow('Durée de tétée moyenne', pe.avgTeteeDurationMin == null ? '—' : pe.avgTeteeDurationMin + ' min')}
-      ${detailRow('Équilibre des côtés', pe.sideLeftPct == null ? '—' : `G ${pe.sideLeftPct} % · D ${pe.sideRightPct} %`)}
       ${detailRow('Intervalle moyen entre 2 cacas', durLong(pe.avgPoopGapMin))}
       ${detailRow('Température max', pe.tempMax == null ? '—' : `${fmtTemp(pe.tempMax)} °C${pe.tempAlert ? ' ⚠️' : ''}`)}
       ${detailRow('Bains', pe.bains)}
@@ -1426,7 +1412,6 @@ function renderStats() {
   const byId = {}; Store.all().forEach(e => { byId[e.id] = e; });
   const qTypes = [
     ['couchesSansType', '🧷', 'Couche sans contenu'],
-    ['teteesSansCote', '🤱', 'Tétée sans côté'],
     ['dodosNonFermes', '😴', 'Dodo non terminé'],
     ['dureesNegatives', '⏱️', 'Durée négative (réveil avant coucher)'],
     ['dureesAberrantes', '⏱️', 'Dodo de durée improbable (> 16 h)'],

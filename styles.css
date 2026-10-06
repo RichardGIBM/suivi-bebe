@@ -104,7 +104,7 @@ body :is(input, textarea) { -webkit-user-select: text; user-select: text; }
 /* ---------- Bandeau "dernière fois" ---------- */
 .status-strip {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(3, 1fr);
   gap: 6px;
   margin-bottom: 14px;
 }
@@ -137,7 +137,7 @@ body :is(input, textarea) { -webkit-user-select: text; user-select: text; }
 }
 .check-item:active { transform: scale(0.97); }
 .check-item .ci-emoji { font-size: 18px; line-height: 1; flex: 0 0 auto; }
-.check-item .ci-main { flex: 1; min-width: 0; display: flex; align-items: baseline; gap: 5px; white-space: nowrap; overflow: hidden; }
+.check-item .ci-main { flex: 1; min-width: 0; display: flex; flex-wrap: wrap; align-items: baseline; gap: 5px; white-space: nowrap; overflow: hidden; }
 .check-item .ci-name { font-size: 12px; font-weight: 600; line-height: 1.15; }
 .check-item .ci-time { font-size: 10.5px; color: var(--text-soft); font-variant-numeric: tabular-nums; flex: 0 0 auto; }
 .check-item .ci-check {

@@ -194,10 +194,11 @@ module.exports = ({ suite, test, eq, deepEq, ok, Stats, ROOT, fs, path }) => {
     deepEq([...ids, 'appris'].filter(a => !mappes.has(a)), [], 'type d’action sans domaine');
   });
 
-  test('les types d’anomalies de stats.js sont tous affichés par app.js', () => {
+  test('les anomalies des actions actives sont affichées par app.js', () => {
     const q = Object.keys(Stats.compute([], { periodDays: 7, now: new Date(2026, 7, 13, 12, 0) }).quality);
     ok(q.length >= 7, `types d’anomalies (${q.length})`);
-    const absents = q.filter(k => !new RegExp(`'${k}'`).test(SRC.app));
+    // L’allaitement reste calculé/exporté pour l’historique, mais est retiré des stats visibles.
+    const absents = q.filter(k => k !== 'teteesSansCote').filter(k => !new RegExp(`'${k}'`).test(SRC.app));
     deepEq(absents, [], 'chaque liste de quality a une entrée dans qTypes (sinon anomalie muette)');
   });
 };

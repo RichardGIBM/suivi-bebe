@@ -956,3 +956,9 @@ d'une installation existante peut se mettre à jour avec un délai.
   ancienne expérience dans cet export. L'ancien laboratoire reste dans les
   fonctions d'audit, sans être exécuté par cette interface.
 - Validation : `node --test tests/sleep-models.cjs` et `node tests/run.js`.
+
+### Interface quotidienne — v44
+
+L’allaitement est retiré des tuiles, du bandeau de suivi et des statistiques visibles. Les événements `tetee`, leur édition dans le journal, les calculs historiques et tous les exports sont conservés. Les statistiques affichent le nombre de biberons par jour et sa moyenne, ainsi que le volume bu.
+
+Les actions `creme_matin` et `creme_soir` sont deux cases quotidiennes indépendantes, enregistrées et synchronisées comme les autres soins, avec heure et correction/suppression depuis la feuille d’édition. Elles sont rattachées au domaine routine des exports.
