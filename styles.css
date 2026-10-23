@@ -1046,3 +1046,29 @@ body :is(input, textarea) { -webkit-user-select: text; user-select: text; }
 [data-theme="dark"] .lab-confirming { background: #243647; color: #a9ceeb; }
 [data-theme="dark"] .lab-exploration { background: #403324; color: #eab88f; }
 [data-theme="dark"] .lab-rejected { background: #46282e; color: #ffb2ae; }
+
+/* Personnalisation du suivi */
+.section-heading { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; }
+.section-heading .section-label { margin-bottom: 0; }
+.customize-btn { border: 0; background: transparent; color: var(--text-soft); font-size: 19px; padding: 5px 8px; min-width: 36px; min-height: 36px; cursor: pointer; }
+.personal-note { color: var(--text-soft); font-size: 12px; line-height: 1.5; margin: 8px 0 16px; }
+.personal-group { margin: 16px 0; }
+.personal-group h3 { color: var(--text-soft); font-size: 12px; margin: 0 0 6px; }
+.personal-row { display: flex; align-items: center; border-bottom: 1px solid var(--line); gap: 4px; }
+.personal-edit { flex: 1; min-width: 0; display: flex; align-items: center; gap: 10px; padding: 10px 0; text-align: left; }
+.personal-edit, .personal-move { border: 0; background: transparent; color: var(--text); font: inherit; cursor: pointer; }
+.personal-edit > span:nth-child(2) { flex: 1; overflow-wrap: anywhere; }
+.personal-edit small { display: block; font-size: 11px; color: var(--text-soft); margin-top: 2px; }
+.personal-move { min-width: 40px; min-height: 44px; font-size: 20px; }
+.personal-move:disabled { opacity: .25; cursor: default; }
+.personal-add { width: 100%; margin-top: 10px; }
+.personal-reset { border: 0; background: transparent; color: var(--text-soft); font: inherit; font-size: 12px; display: block; margin: 16px auto 0; padding: 10px; cursor: pointer; }
+.personal-label { display: block; font-size: 12px; margin: 14px 0 6px; }
+.personal-emoji { max-width: 100px; }
+.personal-visible { display: flex; align-items: center; gap: 10px; font-size: 14px; margin: 20px 0; }
+.personal-visible input { width: 20px; height: 20px; accent-color: var(--text-soft); }
+
+.personal-heading { display: flex; align-items: center; justify-content: space-between; position: sticky; top: -1px; background: var(--bg); z-index: 1; padding: 4px 0; }
+.personal-heading .sheet-title { font-size: 18px; text-align: left; margin: 0; }
+.status-strip[hidden] { display: none; }
+.tile .name, .check-item .ci-name { overflow-wrap: anywhere; white-space: normal; }

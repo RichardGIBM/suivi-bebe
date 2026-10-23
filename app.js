@@ -101,7 +101,8 @@ const Store = {
   },
 
   /* ----- API publique (INCHANGÉE pour l'UI) ----- */
-  all() { return this._load().filter(e => !e.deleted).sort((a, b) => new Date(b.ts) - new Date(a.ts)); },
+  all() { return this._load().filter(e => !e.deleted && e.action !== '__ui_setting').sort((a, b) => new Date(b.ts) - new Date(a.ts)); },
+  preferences() { return this._load().filter(e => !e.deleted && e.action === '__ui_setting'); },
   byDay(date) { const k = ymd(date); return this.all().filter(e => ymd(new Date(e.ts)) === k); },
   byAction(action) { return this.all().filter(e => e.action === action); },
   // Brique pour dashboard / heatmap : événements entre deux dates incluses
@@ -375,9 +376,18 @@ const ACTIONS = [
   { id: 'yeux',        name: 'Yeux',             emoji: '👁️', color: 'var(--c-soins)',       place: 'checklist' },
   { id: 'nez',         name: 'Nez',              emoji: '👃', color: 'var(--c-soins)',       place: 'checklist' },
 ];
-const ACTION_MAP = Object.fromEntries(ACTIONS.map(a => [a.id, a]));
-const TILE_ACTIONS = ACTIONS.filter(a => a.place === 'tile');
-const CHECKLIST_ACTIONS = ACTIONS.filter(a => a.place === 'checklist');
+let ACTION_MAP = Object.fromEntries(ACTIONS.map(a => [a.id, a]));
+let TILE_ACTIONS = ACTIONS.filter(a => a.place === 'tile');
+let CHECKLIST_ACTIONS = ACTIONS.filter(a => a.place === 'checklist');
+
+// Le catalogue complet conserve les actions masquées pour le journal.
+let actionLayout;
+function refreshActions() {
+  actionLayout = Personalization.derive(ACTIONS, Store.preferences());
+  ACTION_MAP = Object.fromEntries(actionLayout.all.map(a => [a.id, a]));
+  TILE_ACTIONS = actionLayout.tiles.filter(a => !a.hidden);
+  CHECKLIST_ACTIONS = actionLayout.checks.filter(a => !a.hidden);
+}
 
 /* Frise du journal — pistes par domaine (l'icône de chaque marque suffit,
    pas de libellé de piste à gauche) et découpe du jour en 2 bandes de 12 h.
@@ -562,6 +572,7 @@ function showView(id) {
 }
 
 function renderCurrent() {
+  refreshActions();
   renderTabbar();
   if (currentView === 'suivi') renderSuivi();
   else if (currentView === 'stats') renderStats();
@@ -571,6 +582,7 @@ function renderCurrent() {
 
 /* ---------- Vue SUIVI ---------- */
 function renderSuivi() {
+  refreshActions();
   renderHeader();
   renderStatusStrip();
   renderChecklist();
@@ -601,7 +613,10 @@ function renderHeader() {
 function renderStatusStrip() {
   const strip = document.getElementById('statusStrip');
   strip.innerHTML = '';
-  TILE_ACTIONS.filter(a => a.showSince).forEach(a => {
+  const statusActions = TILE_ACTIONS.filter(a => a.showSince);
+  strip.hidden = !statusActions.length;
+  strip.style.gridTemplateColumns = `repeat(${Math.max(1, statusActions.length)}, 1fr)`;
+  statusActions.forEach(a => {
     const last = Store.lastOf(a.id);
     let value = '—';
     if (a.id === 'sommeil') {
@@ -2502,6 +2517,7 @@ function buildRawExportPayload(events, now) {
       count: events.length,
     },
     events,
+    personalization: { schema_version: 1, operations: Store.preferences() },
   };
 }
 function exportJSON() {
@@ -2588,9 +2604,89 @@ function onActionTap(action) {
 /* ---------- Bottom sheet ---------- */
 const backdrop = document.getElementById('sheetBackdrop');
 const sheetBody = document.getElementById('sheetBody');
-function openSheet(html) { sheetBody.innerHTML = html; backdrop.hidden = false; }
+function openSheet(html) {
+  sheetBody.innerHTML = html; backdrop.hidden = false;
+  document.getElementById('sheet').scrollTop = 0;
+}
 function closeSheet() { backdrop.hidden = true; sheetBody.innerHTML = ''; }
 backdrop.addEventListener('click', e => { if (e.target === backdrop) closeSheet(); });
+
+/* ---------- Menu discret de personnalisation ---------- */
+function savePreference(target, field, value) {
+  // Date strictement croissante, même pour deux taps dans la même milliseconde.
+  const latest = Store.preferences().reduce((n, r) => Math.max(n, Date.parse(r.ts) || 0), 0);
+  Store.add(Personalization.ACTION, { target, field, value }, new Date(Math.max(Date.now(), latest + 1)));
+}
+function openPersonalization() {
+  refreshActions();
+  const group = (title, actions) => `<section class="personal-group"><h3>${title}</h3>${actions.map((a, i) => `
+    <div class="personal-row">
+      <button type="button" class="personal-edit" data-edit="${a.id}"><span>${escapeHtml(a.emoji)}</span><span>${escapeHtml(a.name)}<small>${a.hidden ? 'Masqué' : 'Visible'}</small></span><span aria-hidden="true">›</span></button>
+      <button type="button" class="personal-move" data-move="${a.id}" data-step="-1" aria-label="Monter ${escapeHtml(a.name)}" ${i === 0 ? 'disabled' : ''}>↑</button>
+      <button type="button" class="personal-move" data-move="${a.id}" data-step="1" aria-label="Descendre ${escapeHtml(a.name)}" ${i === actions.length - 1 ? 'disabled' : ''}>↓</button>
+    </div>`).join('')}</section>`;
+  openSheet(`<div class="personal-heading"><div class="sheet-title">Personnaliser</div><button type="button" class="customize-btn" id="personalCloseTop" aria-label="Fermer la personnalisation">×</button></div>
+    <p class="personal-note">Réglages partagés entre vos téléphones. Masquer un bouton conserve son historique.</p>
+    ${group('Boutons du suivi', actionLayout.tiles)}
+    ${group('Cases quotidiennes', actionLayout.checks)}
+    <button type="button" class="btn btn-primary personal-add" id="personalAdd">＋ Ajouter une case quotidienne</button>
+    <button type="button" class="personal-reset" id="personalReset">Rétablir la disposition par défaut</button>
+    <button type="button" class="btn btn-ghost personal-add" id="personalClose">Fermer</button>`);
+  sheetBody.querySelectorAll('[data-edit]').forEach(b => b.onclick = () => openPersonalAction(b.dataset.edit));
+  sheetBody.querySelectorAll('[data-move]').forEach(b => b.onclick = () => {
+    refreshActions();
+    const a = ACTION_MAP[b.dataset.move];
+    const list = (a.place === 'tile' ? actionLayout.tiles : actionLayout.checks).map(x => x.id);
+    const i = list.indexOf(a.id), j = i + Number(b.dataset.step);
+    if (i < 0 || j < 0 || j >= list.length) return;
+    [list[i], list[j]] = [list[j], list[i]];
+    const scrollTop = document.getElementById('sheet').scrollTop;
+    savePreference(a.place, 'order', list);
+    openPersonalization();
+    document.getElementById('sheet').scrollTop = scrollTop;
+  });
+  sheetBody.querySelector('#personalAdd').onclick = () => openPersonalAction();
+  sheetBody.querySelector('#personalClose').onclick = closeSheet;
+  sheetBody.querySelector('#personalCloseTop').onclick = closeSheet;
+  sheetBody.querySelector('#personalReset').onclick = () => {
+    openSheet(`<div class="sheet-title">Rétablir la disposition ?</div>
+      <p class="personal-note">Les boutons d’origine retrouvent leurs noms, icônes et positions. Les cases ajoutées sont masquées. Tout l’historique est conservé.</p>
+      <div class="sheet-actions"><button type="button" class="btn btn-ghost" id="personalCancel">Annuler</button><button type="button" class="btn btn-primary" id="personalConfirm">Rétablir</button></div>`);
+    sheetBody.querySelector('#personalCancel').onclick = openPersonalization;
+    sheetBody.querySelector('#personalConfirm').onclick = () => { savePreference('*', 'reset', true); openPersonalization(); toast('Disposition rétablie'); };
+  };
+}
+function openPersonalAction(id) {
+  refreshActions();
+  const a = id ? ACTION_MAP[id] : null;
+  if (id && !a) { openPersonalization(); return; }
+  openSheet(`<div class="sheet-title">${a ? 'Modifier le bouton' : 'Nouvelle case quotidienne'}</div>
+    <form id="personalForm">
+      <label class="personal-label" for="personalName">Nom</label>
+      <input class="text-field" id="personalName" maxlength="32" required value="${escapeHtml(a ? a.name : '')}" autocomplete="off" />
+      <label class="personal-label" for="personalEmoji">Emoji</label>
+      <input class="text-field personal-emoji" id="personalEmoji" maxlength="16" value="${escapeHtml(a ? a.emoji : '✓')}" autocomplete="off" />
+      ${a ? `<label class="personal-visible"><input type="checkbox" id="personalVisible" ${a.hidden ? '' : 'checked'} /> Afficher ce bouton</label>` : ''}
+      <p class="personal-note">${a ? 'Le nom et l’icône sont aussi utilisés dans le journal. Les données et les statistiques sont conservées.' : 'Une case indépendante pour chaque jour, avec son heure et son historique.'}</p>
+      <div class="sheet-actions"><button type="button" class="btn btn-ghost" id="personalBack">Retour</button><button type="submit" class="btn btn-primary">Enregistrer</button></div>
+    </form>`);
+  sheetBody.querySelector('#personalBack').onclick = openPersonalization;
+  sheetBody.querySelector('#personalForm').onsubmit = e => {
+    e.preventDefault();
+    const name = Personalization.text(sheetBody.querySelector('#personalName').value, 32);
+    const emoji = Personalization.text(sheetBody.querySelector('#personalEmoji').value, 16) || '✓';
+    if (!name) { sheetBody.querySelector('#personalName').focus(); return; }
+    const hidden = a ? !sheetBody.querySelector('#personalVisible').checked : false;
+    if (a) {
+      if (name !== a.name) savePreference(a.id, 'name', name);
+      if (emoji !== a.emoji) savePreference(a.id, 'emoji', emoji);
+      if (hidden !== a.hidden) savePreference(a.id, 'hidden', hidden);
+    } else {
+      savePreference('custom_' + crypto.randomUUID(), 'definition', { name, emoji });
+    }
+    openPersonalization(); toast('Personnalisation enregistrée');
+  };
+}
 
 /* ---------- Suppression : toujours confirmée ----------
    Un tap malheureux a déjà coûté un souvenir : la suppression est un soft-delete
@@ -2954,6 +3050,7 @@ function updateSyncPill(state) {
 }
 
 /* ---------- Navigation jour ---------- */
+document.getElementById('customize').onclick = openPersonalization;
 document.getElementById('prevDay').onclick = () => { selectedDate = new Date(selectedDate); selectedDate.setDate(selectedDate.getDate() - 1); renderSuivi(); };
 document.getElementById('nextDay').onclick = () => {
   if (isSameDay(selectedDate, startOfDay(new Date()))) return;
@@ -3046,6 +3143,7 @@ function wirePullToRefresh() {
   });
 }
 
+Store.subscribe(renderCurrent);
 wireLockScreen();
 wirePullToRefresh();
 renderTabbar();

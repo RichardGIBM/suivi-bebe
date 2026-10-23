@@ -2190,7 +2190,10 @@ const Stats = {
     // Un domaine n'est déclaré que s'il a une date de fiabilité OU au moins un
     // événement dans le fichier : pas de domaine fantôme, pas de zéro implicite.
     const domains = {};
-    for (const d of this.BS_DOMAINS) {
+    for (const base of this.BS_DOMAINS) {
+      const d = base.key === 'routine'
+        ? { ...base, actions: [...base.actions, ...new Set(list.filter(e => /^custom_[a-zA-Z0-9-]+$/.test(e.action)).map(e => e.action))] }
+        : base;
       const start = d.start && ds[d.start] != null ? new Date(ds[d.start]).getTime() : null;
       const vu = d.actions.some(a => present.has(a));
       if ((start == null || !isFinite(start)) && !vu) continue;

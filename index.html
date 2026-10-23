@@ -15,7 +15,7 @@
   <meta name="apple-mobile-web-app-status-bar-style" content="default" />
   <meta name="apple-mobile-web-app-title" content="Suivi Bébé" />
 
-  <link rel="stylesheet" href="styles.css?v=44" />
+  <link rel="stylesheet" href="styles.css?v=45" />
 </head>
 <body>
   <!-- Indicateur "tirer pour rafraîchir" -->
@@ -40,7 +40,7 @@
 
       <!-- Checklist quotidienne -->
       <section class="checklist-wrap">
-        <h2 class="section-label">Chaque jour</h2>
+        <div class="section-heading"><h2 class="section-label">Chaque jour</h2><button type="button" class="customize-btn" id="customize" aria-label="Personnaliser les boutons" title="Personnaliser">⚙</button></div>
         <div class="checklist" id="checklist"></div>
       </section>
 
@@ -140,9 +140,10 @@
 
   <script src="vendor/supabase.js"></script>
   <script src="config.js?v=15"></script>
-  <script src="stats.js?v=44"></script>
+  <script src="stats.js?v=45"></script>
   <script src="prediction.js?v=43"></script>
-  <script src="app.js?v=44"></script>
+  <script src="personalization.js?v=45"></script>
+  <script src="app.js?v=45"></script>
   <script>
     // Enregistrement du service worker (PWA hors-ligne)
     if ('serviceWorker' in navigator) {

@@ -962,3 +962,13 @@ d'une installation existante peut se mettre à jour avec un délai.
 L’allaitement est retiré des tuiles, du bandeau de suivi et des statistiques visibles. Les événements `tetee`, leur édition dans le journal, les calculs historiques et tous les exports sont conservés. Les statistiques affichent le nombre de biberons par jour et sa moyenne, ainsi que le volume bu.
 
 Les actions `creme_matin` et `creme_soir` sont deux cases quotidiennes indépendantes, enregistrées et synchronisées comme les autres soins, avec heure et correction/suppression depuis la feuille d’édition. Elles sont rattachées au domaine routine des exports.
+
+### Personnalisation partagée — v45
+
+La roue dentée à côté de « Chaque jour » ouvre le menu Personnaliser : masquer/réafficher les boutons, modifier nom et emoji, ordonner séparément les tuiles et les cases quotidiennes avec les flèches, ajouter des cases quotidiennes. Les formulaires spécialisés existants restent liés à leur identifiant (biberon, sommeil…). Les nouveaux types `custom_<uuid>` utilisent le formulaire de soin simple avec heure.
+
+Les préférences sont des opérations `__ui_setting` dans la même file hors ligne et la même synchronisation Supabase que les événements. Aucune nouvelle table ni migration serveur. Chaque opération concerne un champ ou l’ordre d’une section ; deux modifications indépendantes peuvent donc fusionner. Le catalogue est reconstruit dans un ordre déterministe (date puis id) ; pour un même champ, la dernière opération selon cet ordre gagne. Les dates des opérations locales sont strictement croissantes par rapport aux opérations connues ; deux appareils hors ligne ne peuvent pas garantir l’ordre réel de leurs modifications simultanées.
+
+`Store.all()` exclut les réglages : ils ne participent ni au journal, ni aux statistiques, ni aux modèles prédictifs. `Store.preferences()` fournit les opérations. Les JSON brut et Baby Scientist ajoutent une clé racine `personalization` (version 1, opérations), sans changer `events` ni son compteur. Les identifiants des cases personnalisées sont reconnus comme domaine routine par l’export analytique. La réinitialisation restaure les boutons d’origine et masque les ajouts, tout en gardant leurs définitions et leurs saisies ; ils peuvent être réaffichés ensuite.
+
+Validation : `node tests/run.js` et `node --test tests/personalization.cjs tests/sync.cjs tests/sleep-models.cjs`. Tests de fusion, persistance hors ligne, séparation journal/réglages, export, masquage et réinitialisation. Vérification interactive sur prévisualisation isolée sans accès à Supabase, au format téléphone.
