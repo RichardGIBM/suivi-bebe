@@ -972,3 +972,11 @@ Les préférences sont des opérations `__ui_setting` dans la même file hors li
 `Store.all()` exclut les réglages : ils ne participent ni au journal, ni aux statistiques, ni aux modèles prédictifs. `Store.preferences()` fournit les opérations. Les JSON brut et Baby Scientist ajoutent une clé racine `personalization` (version 1, opérations), sans changer `events` ni son compteur. Les identifiants des cases personnalisées sont reconnus comme domaine routine par l’export analytique. La réinitialisation restaure les boutons d’origine et masque les ajouts, tout en gardant leurs définitions et leurs saisies ; ils peuvent être réaffichés ensuite.
 
 Validation : `node tests/run.js` et `node --test tests/personalization.cjs tests/sync.cjs tests/sleep-models.cjs`. Tests de fusion, persistance hors ligne, séparation journal/réglages, export, masquage et réinitialisation. Vérification interactive sur prévisualisation isolée sans accès à Supabase, au format téléphone.
+
+### Changement d’heure — v46
+
+La frise utilise des bornes civiles converties en temps réel : le 25 octobre 2026, la première bande dure 13 h, la seconde 12 h. Les graduations de l’heure répétée portent ¹ et ². Le positionnement des événements, du sommeil, du fond nocturne et de « maintenant » utilise la même référence. Les durées/statistiques gardaient déjà les différences d’horodatages UTC et les découpes à minuit local.
+
+`time.js` fournit les occurrences possibles d’une heure locale. L’éditeur conserve l’instant exact lorsqu’il n’est pas modifié ; pour une heure répétée, un sélecteur distingue les deux occurrences avec leur décalage UTC. Les boutons ±5 min suivent le temps réellement écoulé. Au printemps, une heure inexistante bloque l’enregistrement. Les horodatages historiques ne sont pas réécrits : une saisie antérieure erronée peut être corrigée depuis le journal.
+
+Validation : `node tests/run.js` et `node --test tests/time.cjs tests/personalization.cjs tests/sync.cjs tests/sleep-models.cjs`, comprenant conservation des deux occurrences, secondes, choix explicite, pas à travers le recul/saut d’heure, frise de 23/24/25 h et rendu réel des marques à 08h et 23h30.

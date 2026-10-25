@@ -470,7 +470,12 @@ function babyAge(date) {
   const w = Math.floor(days / 7), r = days % 7;
   return { txt: r === 0 ? `${w} semaines` : `${w} sem ${r} j` };
 }
-function hhmm(d) { return new Date(d).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit', hour12: false }); }
+function hhmm(d) {
+  const date = new Date(d);
+  const label = date.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit', hour12: false });
+  return LocalTime.candidates(date, date.getHours(), date.getMinutes()).length > 1
+    ? `${label} (${LocalTime.offsetLabel(date)})` : label;
+}
 function pad2(n) { return String(n).padStart(2, '0'); }
 function minOf(ts) { const d = new Date(ts); return d.getHours() * 60 + d.getMinutes(); } // minutes depuis minuit
 function hhmmInput(d) { return new Date(d).toTimeString().slice(0, 5); }
@@ -515,38 +520,52 @@ function timeFieldHTML(date, label = 'Heure') {
       <button type="button" class="time-step" data-step="-5">−</button>
       <input type="time" class="time-input" value="${hhmmInput(date)}" />
       <button type="button" class="time-step" data-step="5">+</button>
-    </div>`;
+    </div>
+    <select class="time-occurrence text-field" aria-label="Occurrence de l’heure" hidden></select>
+    <div class="time-warning" role="status"></div>`;
 }
 // Branche les ± d'un champ heure. root = élément conteneur, baseDate = jour de référence.
 function wireTimeField(root, baseDate, onChange) {
+  const base = new Date(baseDate);
   const input = root.querySelector('.time-input');
-  // Minutes depuis minuit à partir du champ ; null si vide/invalide
-  const readTotal = () => {
-    const [h, m] = input.value.split(':').map(Number);
-    if (!Number.isFinite(h) || !Number.isFinite(m)) return null;
-    return h * 60 + m;
+  const choice = root.querySelector('.time-occurrence');
+  const warning = root.querySelector('.time-warning');
+  let current = new Date(base);
+  const resolve = () => {
+    const match = /^(\d{2}):(\d{2})$/.exec(input.value);
+    if (!match) return [];
+    return LocalTime.candidates(base, Number(match[1]), Number(match[2]));
   };
-  const getDate = () => {
-    const total = readTotal();
-    const d = new Date(baseDate);
-    // Repli sur l'heure de base si le champ a été vidé/est invalide
-    if (total === null) return d;
-    d.setHours(0, total, 0, 0);
-    return d;
+  const update = (preferred = current) => {
+    const candidates = resolve();
+    const selected = candidates.find(d => d.getTimezoneOffset() === preferred.getTimezoneOffset()) || candidates[0];
+    // Sans modification de l’heure affichée, conserver l’instant exact, secondes comprises.
+    current = selected && hhmmInput(preferred) === input.value && selected.getTimezoneOffset() === preferred.getTimezoneOffset()
+      ? new Date(preferred) : (selected || new Date(NaN));
+    choice.hidden = candidates.length < 2;
+    choice.innerHTML = candidates.map((d, i) => `<option value="${d.getTime()}">${i === 0 ? '1re occurrence' : '2e occurrence'} · ${LocalTime.offsetLabel(d)}</option>`).join('');
+    if (selected) choice.value = String(selected.getTime());
+    const error = candidates.length ? '' : 'Cette heure n’existe pas ce jour-là. Choisis une autre heure.';
+    input.setCustomValidity(error);
+    warning.textContent = candidates.length > 1 ? 'Cette heure existe deux fois à cause du changement d’heure.' : error;
   };
-  const fire = () => onChange && onChange(getDate());
+  const fire = () => { if (Number.isFinite(current.getTime()) && onChange) onChange(new Date(current)); };
+  input.oninput = () => { update(); fire(); };
+  choice.onchange = () => { current = new Date(Number(choice.value)); fire(); };
   root.querySelectorAll('.time-step').forEach(btn => {
     btn.onclick = () => {
-      const base = readTotal();
-      const from = base === null ? (baseDate.getHours() * 60 + baseDate.getMinutes()) : base;
-      let total = from + Number(btn.dataset.step);
-      total = Math.max(0, Math.min(24 * 60 - 1, total));
-      const d = new Date(baseDate); d.setHours(0, total, 0, 0);
-      input.value = hhmmInput(d); fire();
+      const from = Number.isFinite(current.getTime()) ? current : base;
+      const next = new Date(from.getTime() + Number(btn.dataset.step) * 60000);
+      // Les boutons règlent l’heure du jour choisi, sans changer de date.
+      if (!isSameDay(next, base)) return;
+      input.value = hhmmInput(next); update(next); fire();
     };
   });
-  input.oninput = fire;
-  return getDate;
+  update(base);
+  return () => new Date(current);
+}
+function validTimeFields() {
+  return [...sheetBody.querySelectorAll('.time-input')].every(input => input.reportValidity());
 }
 
 /* ============================================================
@@ -851,9 +870,16 @@ function renderJournalTimeline(host, events) {
   }
   const isToday = isSameDay(selectedDate, startOfDay(new Date()));
   const now = new Date();
-  const nowMin = now.getHours() * 60 + now.getMinutes();
+  const nowMin = (now - startOfDay(selectedDate)) / 60000;
   const tl = document.createElement('div');
   tl.className = 'tl';
+  const dayMinutes = LocalTime.band(selectedDate, 0, 24).end;
+  if (dayMinutes !== 1440) {
+    const note = document.createElement('div');
+    note.className = 'time-warning';
+    note.textContent = dayMinutes > 1440 ? 'Journée de 25 h · 2h¹ avant le recul, 2h² après.' : 'Journée de 23 h · passage direct de 2 h à 3 h.';
+    host.appendChild(note);
+  }
   JOURNAL_BANDS.forEach(band => tl.appendChild(renderJournalBand(band, events, { isToday, nowMin })));
   host.appendChild(tl);
 }
@@ -862,7 +888,8 @@ function renderJournalTimeline(host, events) {
    minuit du jour affiché (mn) → le sommeil à cheval sur minuit est borné
    proprement à 0/24, cohérent avec la découpe des stats. */
 function renderJournalBand(band, events, { isToday, nowMin }) {
-  const startMin = band.startH * 60, endMin = band.endH * 60, len = endMin - startMin;
+  const clock = LocalTime.band(selectedDate, band.startH, band.endH);
+  const startMin = clock.start, endMin = clock.end, len = endMin - startMin;
   const p = (m) => ((m - startMin) / len) * 100;
   const dayStart = startOfDay(selectedDate).getTime();
   const mn = (ts) => Math.round((new Date(ts).getTime() - dayStart) / 60000);
@@ -874,10 +901,10 @@ function renderJournalBand(band, events, { isToday, nowMin }) {
   const axis = document.createElement('div');
   axis.className = 'tl-axis';
   let ax = '';
-  for (let h = band.startH; h <= band.endH; h += 2) {
-    const cls = h === band.startH ? 'start' : (h === band.endH ? 'end' : '');
-    ax += `<div class="tl-tick ${cls}" style="left:${p(h * 60)}%">${h}h</div>`;
-  }
+  clock.ticks.forEach(tick => {
+    const cls = tick.minute === startMin ? 'start' : (tick.minute === endMin ? 'end' : '');
+    ax += `<div class="tl-tick ${cls}" style="left:${p(tick.minute)}%">${tick.label}</div>`;
+  });
   axis.innerHTML = ax;
   wrap.appendChild(axis);
 
@@ -888,12 +915,12 @@ function renderJournalBand(band, events, { isToday, nowMin }) {
   const overlay = document.createElement('div');
   overlay.className = 'tl-overlay';
   let ov = band.startH === 0
-    ? `<div class="tl-night" style="left:0; width:${p(6 * 60)}%"></div>`     // 0→6 h
-    : `<div class="tl-night" style="left:${p(20 * 60)}%; right:0"></div>`;   // 20→24 h
-  for (let h = band.startH + 2; h < band.endH; h += 2) ov += `<div class="tl-gridline" style="left:${p(h * 60)}%"></div>`;
+    ? `<div class="tl-night" style="left:0; width:${p(clock.at(6))}%"></div>`     // 0→6 h
+    : `<div class="tl-night" style="left:${p(clock.at(20))}%; right:0"></div>`;   // 20→24 h
+  clock.ticks.filter(t => t.minute > startMin && t.minute < endMin).forEach(t => { ov += `<div class="tl-gridline" style="left:${p(t.minute)}%"></div>`; });
   if (isToday && nowMin > startMin && nowMin < endMin) {
     ov += `<div class="tl-future" style="left:${p(nowMin)}%"></div>`;
-    ov += `<div class="tl-now" data-label="${pad2(Math.floor(nowMin / 60))}:${pad2(nowMin % 60)}" style="left:${p(nowMin)}%"></div>`;
+    ov += `<div class="tl-now" data-label="${hhmm(new Date())}" style="left:${p(nowMin)}%"></div>`;
   } else if (isToday && nowMin <= startMin) {
     ov += `<div class="tl-future" style="left:0; right:0"></div>`;          // bande entièrement future
   }
@@ -926,8 +953,8 @@ function renderJournalBand(band, events, { isToday, nowMin }) {
         bar.style.cssText = `--c:${a.color}; left:${p(s)}%; width:${(w / len) * 100}%`;
         // libellé = durée du SEGMENT (ce que ce jour comptabilise) dès > 1h, une seule
         // fois, dans la bande qui en contient la plus grande part
-        const w1 = Math.max(0, Math.min(end, 720)  - Math.max(segStart, 0));
-        const w2 = Math.max(0, Math.min(end, 1440) - Math.max(segStart, 720));
+        const w1 = Math.max(0, Math.min(end, clock.noon) - Math.max(segStart, 0));
+        const w2 = Math.max(0, Math.min(end, clock.dayEnd) - Math.max(segStart, clock.noon));
         const otherW = band.startH === 0 ? w2 : w1;
         const showHere = g.min > 60 && w > 0 && (w > otherW || (w === otherW && band.startH === 0));
         if (showHere) bar.innerHTML = `<span class="lbl">${fmtDuration(g.min)}</span>`;
@@ -2867,12 +2894,16 @@ function openActionSheet(action, ev) {
     // avec l'heure et le détail — de quoi reconnaître la ligne qu'on efface.
     document.getElementById('del').onclick = () => askDelete(ev.id, { icon: action.emoji, title: 'Supprimer cet événement ?', sub: [action.name, hhmm(ev.ts), describe(ev)].filter(Boolean).join(' · ') });
     document.getElementById('save').onclick = () => {
+      if (!validTimeFields()) return;
       Store.update(ev.id, { ts: getTime().toISOString(), data: getData() });
       closeSheet(); toast('Modifié'); vibrate(); renderCurrent();
     };
   } else {
     document.getElementById('cancel').onclick = closeSheet;
-    document.getElementById('save').onclick = () => save(action, getData(), getTime());
+    document.getElementById('save').onclick = () => {
+      if (!validTimeFields()) return;
+      save(action, getData(), getTime());
+    };
   }
 }
 
@@ -2896,6 +2927,7 @@ function sheetSleepStart() {
   const getTime = wireTimeField(sheetBody, defaultTs());
   document.getElementById('cancel').onclick = closeSheet;
   document.getElementById('save').onclick = () => {
+    if (!validTimeFields()) return;
     Store.add('sommeil', { end: null }, getTime());
     closeSheet(); toast('😴 Dodo démarré'); vibrate(); renderCurrent();
   };
@@ -2919,6 +2951,7 @@ function sheetSleepEnd(sleep) {
   // question) → « Effacer » vs « Continuer », aucune ambiguïté sur les deux boutons.
   document.getElementById('del').onclick = () => askDelete(sleep.id, { icon: '😴', title: 'Effacer ce dodo en cours ?', sub: `Commencé à ${hhmm(sleep.ts)}`, ok: 'Effacer', no: 'Continuer', done: 'Dodo annulé' });
   document.getElementById('save').onclick = () => {
+    if (!validTimeFields()) return;
     Store.patchData(sleep.id, { end: getTime().toISOString() });
     closeSheet(); toast('😴 Dodo enregistré'); vibrate(); renderCurrent();
   };
@@ -2949,6 +2982,7 @@ function sheetSleepEditDone(ev) {
   const getEnd = wireTimeField(document.getElementById('endField'), ev.data.end, recompute);
   document.getElementById('del').onclick = () => askDelete(ev.id, { icon: '😴', title: 'Supprimer ce dodo ?', sub: `${hhmm(ev.ts)} → ${hhmm(ev.data.end)} · ${fmtDuration(durMin(ev.ts, ev.data.end))}` });
   document.getElementById('save').onclick = () => {
+    if (!validTimeFields()) return;
     Store.update(ev.id, { ts: getStart().toISOString() });
     Store.patchData(ev.id, { end: getEnd().toISOString() });
     closeSheet(); toast('Modifié'); renderCurrent();

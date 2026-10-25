@@ -1072,3 +1072,7 @@ body :is(input, textarea) { -webkit-user-select: text; user-select: text; }
 .personal-heading .sheet-title { font-size: 18px; text-align: left; margin: 0; }
 .status-strip[hidden] { display: none; }
 .tile .name, .check-item .ci-name { overflow-wrap: anywhere; white-space: normal; }
+
+.time-occurrence[hidden] { display: none; }
+.time-occurrence { margin-top: 8px; font-size: 13px; }
+.time-warning { color: var(--text-soft); font-size: 12px; line-height: 1.4; margin-top: 6px; }
