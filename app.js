@@ -2788,7 +2788,7 @@ const FORMS = {
 
   biberon: {
     html(d) {
-      const ml = d.ml != null ? Number(d.ml) : 90;
+      const ml = d.ml != null ? Number(d.ml) : 200;
       return `
         <div class="sheet-section-label">Quantité bue</div>
         <div class="stepper">
@@ -2797,11 +2797,11 @@ const FORMS = {
           <button type="button" id="plus">+</button>
         </div>
         <div class="presets" id="mlpresets">
-          ${[30, 60, 90, 120, 150, 180].map(v => `<button type="button" class="preset" data-v="${v}">${v}</button>`).join('')}
+          ${[150, 170, 190, 210, 230, 250].map(v => `<button type="button" class="preset" data-v="${v}">${v}</button>`).join('')}
         </div>`;
     },
     wire(root, d) {
-      let ml = d.ml != null ? Number(d.ml) : 90;
+      let ml = d.ml != null ? Number(d.ml) : 200;
       const valEl = root.querySelector('#mlval');
       const setMl = v => { ml = Math.max(0, v); valEl.textContent = ml; };
       root.querySelector('#minus').onclick = () => setMl(ml - 10);
