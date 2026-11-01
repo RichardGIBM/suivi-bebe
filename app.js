@@ -481,6 +481,10 @@ function minOf(ts) { const d = new Date(ts); return d.getHours() * 60 + d.getMin
 function hhmmInput(d) { return new Date(d).toTimeString().slice(0, 5); }
 function capitalize(s) { return s.charAt(0).toUpperCase() + s.slice(1); }
 function fmtTemp(t) { return Number(t).toFixed(1).replace('.', ','); }
+function fmtMilkVolume(ml) {
+  if (ml == null) return '—';
+  return ml >= 1000 ? (ml / 1000).toFixed(2).replace('.', ',') + ' L' : Math.round(ml) + ' ml';
+}
 function durMin(a, b) { return Math.round((new Date(b) - new Date(a)) / 60000); }
 function fmtDuration(min) {
   if (min < 0) min = 0;
@@ -1170,7 +1174,7 @@ function statChartBars(values, o = {}) {
   const color = o.color || CHART.vert, W = o.W || 300, H = o.H || 66;
   const n = values.length || 1, atten = o.atten || new Set(), hasX = !!o.labels;
   const isDur = !!o.dur;
-  const yfmt = isDur ? (v => v === 0 ? '0' : durAxis(v)) : (v => String(Math.round(v)));
+  const yfmt = o.yfmt || (isDur ? (v => v === 0 ? '0' : durAxis(v)) : (v => String(Math.round(v))));
   const dataMax = Math.max(...values.filter(v => v != null), 0);
   // Graduations régulières (0 → max en ~4 pas) : lire une barre sans étiquette en
   // la projetant entre deux lignes. midline:false → axe minimal 0/max (cartes compactes).
@@ -1395,7 +1399,7 @@ function renderStats() {
       <div class="tb-title">Aujourd'hui <span>· à cette heure</span></div>
       <div class="tb-chips">
         <div class="tb-chip"><span class="tb-v">${f0(today.biberons)}</span><span class="tb-l">biberons</span></div>
-        <div class="tb-chip"><span class="tb-v">${f0(today.volumeMl)} ml</span><span class="tb-l">volume bu</span></div>
+        <div class="tb-chip"><span class="tb-v">${fmtMilkVolume(today.volumeMl)}</span><span class="tb-l">volume bu</span></div>
         <div class="tb-chip"><span class="tb-v">${dur(today.sleepMin)}</span><span class="tb-l">sommeil</span></div>
         <div class="tb-chip"><span class="tb-v">${f0(today.pipis)}/${f0(today.cacas)}</span><span class="tb-l">💧/💩</span></div>
       </div>
@@ -1414,8 +1418,8 @@ function renderStats() {
       chart: statChartBars(bibA, { color: CHART.biberon, atten: attFeeds, labels, W: 150, H: 74, valfmt: v => String(v) }),
     }),
     card({ // 3 Volume bu (biberon, bleu)
-      title: 'Volume bu', hero: `${f0(av.volumeMl)}`, sub: 'ml / j (biberon)',
-      chart: statChartBars(volA, { color: CHART.biberon, atten: attFeeds, labels, W: 150, H: 74, valfmt: v => String(v) }),
+      title: 'Volume bu', hero: fmtMilkVolume(av.volumeMl), sub: '/ j (biberon)',
+      chart: statChartBars(volA, { color: CHART.biberon, atten: attFeeds, labels, W: 150, H: 74, yfmt: v => v >= 1000 ? fmtMilkVolume(v).replace(' ', '') : String(v), valfmt: v => v >= 1000 ? fmtMilkVolume(v).replace(' ', '') : String(v) }),
     }),
     card({ // 5 Sommeil total — échelle tronquée 8 h → 20 h (bande jamais dépassée)
       title: 'Sommeil', hero: dur(av.sleepMin), sub: '/ j',
