@@ -1418,8 +1418,8 @@ function renderStats() {
       chart: statChartBars(bibA, { color: CHART.biberon, atten: attFeeds, labels, W: 150, H: 74, valfmt: v => String(v) }),
     }),
     card({ // 3 Volume bu (biberon, bleu)
-      title: 'Volume bu', hero: fmtMilkVolume(av.volumeMl), sub: '/ j (biberon)',
-      chart: statChartBars(volA, { color: CHART.biberon, atten: attFeeds, labels, W: 150, H: 74, yfmt: v => v >= 1000 ? fmtMilkVolume(v).replace(' ', '') : String(v), valfmt: v => v >= 1000 ? fmtMilkVolume(v).replace(' ', '') : String(v) }),
+      title: 'Volume bu', legend: '<span class="sc-sub">graphique en L</span>', hero: fmtMilkVolume(av.volumeMl), sub: '/ j (biberon)',
+      chart: statChartBars(volA, { color: CHART.biberon, atten: attFeeds, labels, W: 180, H: 89, yfmt: v => (v / 1000).toFixed(2).replace('.', ','), valfmt: v => (v / 1000).toFixed(2).replace('.', ',') }),
     }),
     card({ // 5 Sommeil total — échelle tronquée 8 h → 20 h (bande jamais dépassée)
       title: 'Sommeil', hero: dur(av.sleepMin), sub: '/ j',
